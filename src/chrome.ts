@@ -1,12 +1,13 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { createServer } from "node:net";
+import { dirname, join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { currentAccount, downloadDir, HOME_DIR, profileDir, type Account } from "./accounts.js";
+import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
+import { CONFIG, OUTPUT_ROOT } from "./config.js";
 import { CHROME_HINT } from "./platform.js";
 
-export { HOME_DIR };
+export { HOME_DIR, OUTPUT_ROOT };
 export const FLOW_URL = "https://flow.google.com/";
 // Flow's buttons are found by their English names ("Start generation", "Download"...), so Flow has to show in English
 // whatever language the Google account uses. `hl=en` on the address does that: `hl=es` turned every label Spanish on
@@ -19,13 +20,11 @@ export const inEnglish = (url: string): string => {
 };
 const FLOW_HOSTS = /^https:\/\/(flow\.google\.com|labs\.google\/fx)/;
 export const PROFILE_DIR = join(HOME_DIR, "chrome-profile");
-// Where finished stills, clips and narrations go. FLOW_MCP_OUTPUT may point at another drive (e.g. D:\flow-mcp-out).
-export const OUTPUT_ROOT = process.env.FLOW_MCP_OUTPUT ?? join(homedir(), "flow-mcp-out");
-export const CDP_PORT = Number(process.env.FLOW_MCP_CDP_PORT ?? 9333);
-const cdpUrl = (a: Account) => `http://127.0.0.1:${a.port}`;
+// The port asked for. The one actually in use can differ when that one was taken; ownChrome() returns the real one.
+export const CDP_PORT = CONFIG.cdpPort;
 
 const CHROME_PATHS = [
-  process.env.FLOW_MCP_CHROME,
+  CONFIG.chrome,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/usr/bin/google-chrome",
   // Linux: Google's .deb installs google-chrome-stable and keeps the real binary under /opt. Chromium comes last on
@@ -48,13 +47,45 @@ const browsers = new Map<string, Browser>();
 // Connecting is shared per account, so two calls arriving together never launch the same Chrome twice.
 const connecting = new Map<string, Promise<Browser>>();
 
-async function cdpUp(a: Account): Promise<boolean> {
+// Which browser answers on a port, as the path of its remote-control address (it ends in an id that is new every
+// time Chrome starts). Null when nothing answers.
+async function browserIdAt(port: number): Promise<string | null> {
   try {
-    const res = await fetch(`${cdpUrl(a)}/json/version`, { signal: AbortSignal.timeout(1500) });
-    return res.ok;
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
+    const { webSocketDebuggerUrl } = (await res.json()) as { webSocketDebuggerUrl?: string };
+    return webSocketDebuggerUrl ? new URL(webSocketDebuggerUrl).pathname : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// The remote-control port of Flow Studio's own Chrome for this account, or null when it is not running. Each account
+// notes its port and browser id in its own chrome.json ("main" keeps <HOME_DIR>/chrome.json), so any unrelated Chrome
+// that happens to listen on the same port is never attached to or closed.
+export async function ownChrome(account: Account = currentAccount()): Promise<number | null> {
+  let note: { port?: number; id?: string };
+  try {
+    note = JSON.parse(readFileSync(chromeFile(account), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!Number.isInteger(note.port) || !note.id) return null;
+  return (await browserIdAt(note.port!)) === note.id ? note.port! : null;
+}
+
+const portFree = (port: number) =>
+  new Promise<boolean>((ok) => {
+    const probe = createServer();
+    probe.once("error", () => ok(false));
+    probe.listen(port, "127.0.0.1", () => probe.close(() => ok(true)));
+  });
+
+// The wanted port, or the next free one after it.
+export async function freePort(wanted: number, tries = 20): Promise<number> {
+  for (let port = wanted; port < wanted + tries && port <= 65535; port++) {
+    if (await portFree(port)) return port;
+  }
+  throw new Error(`No free port from ${wanted} to ${wanted + tries - 1}.`);
 }
 
 // Points Chrome's profile fallback download directory at the account's own download folder instead of ~/Downloads.
@@ -97,19 +128,21 @@ export function chromeExecutable(): string {
   return chromePath;
 }
 
-async function launchChrome(a: Account): Promise<void> {
+async function launchChrome(a: Account): Promise<number> {
   const chromePath = chromeExecutable();
   const profile = profileDir(a);
   mkdirSync(profile, { recursive: true });
   seedDownloadPreferences(profile, downloadDir(a));
+  const port = await freePort(a.port);
   const args = [
     `--user-data-dir=${profile}`,
-    `--remote-debugging-port=${a.port}`,
+    `--remote-debugging-port=${port}`,
     "--no-first-run",
     "--no-default-browser-check",
     inEnglish(FLOW_URL),
   ];
-  // On Windows, MCP servers are spawned hidden (SW_HIDE), which child GUI processes inherit unless started with Normal style.
+  // On Windows, MCP servers and background daemons are spawned hidden (SW_HIDE), which child GUI processes inherit
+  // unless started with Normal style.
   if (process.platform === "win32") {
     execFileSync(
       "powershell.exe",
@@ -125,11 +158,20 @@ async function launchChrome(a: Account): Promise<void> {
     const child = spawn(chromePath, args, { detached: true, stdio: "ignore" });
     child.unref();
   }
+  // The port was free a moment ago and this Chrome was told to use it, so the browser that appears there is ours.
   for (let i = 0; i < 40; i++) {
-    if (await cdpUp(a)) return;
+    const id = await browserIdAt(port);
+    if (id) {
+      const noteFile = chromeFile(a);
+      mkdirSync(dirname(noteFile), { recursive: true });
+      writeFileSync(noteFile, JSON.stringify({ port, id, started: new Date().toISOString() }, null, 2) + "\n");
+      return port;
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
-  throw new Error(`Chrome for account "${a.name}" started but CDP port ${a.port} never came up.`);
+  throw new Error(
+    `Chrome for account "${a.name}" started but could not be reached on port ${port}. If a Flow Studio Chrome window is already open, close it and try again.`,
+  );
 }
 
 export async function getBrowser(account: Account = currentAccount()): Promise<Browser> {
@@ -139,14 +181,44 @@ export async function getBrowser(account: Account = currentAccount()): Promise<B
   let pending = connecting.get(key);
   if (!pending) {
     pending = (async () => {
-      if (!(await cdpUp(account))) await launchChrome(account);
-      const b = await chromium.connectOverCDP(cdpUrl(account));
+      const port = (await ownChrome(account)) ?? (await launchChrome(account));
+      const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
       browsers.set(key, b);
       return b;
     })().finally(() => connecting.delete(key));
     connecting.set(key, pending);
   }
   return pending;
+}
+
+// Closes Flow Studio's own Chrome window for one account, and only that one. Returns false when it was not running.
+export async function closeChrome(account: Account = currentAccount()): Promise<boolean> {
+  const port = await ownChrome(account);
+  if (!port) return false;
+  const key = account.name.toLowerCase();
+  const existing = browsers.get(key);
+  const b = existing?.isConnected() ? existing : await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  browsers.delete(key);
+  try {
+    const session = await b.newBrowserCDPSession();
+    await session.send("Browser.close");
+  } catch {
+    // Chrome drops the connection as it closes, which is the result we want.
+  }
+  for (let i = 0; i < 40; i++) {
+    if (!(await browserIdAt(port))) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`Flow Studio's Chrome window for account "${account.name}" did not close.`);
+}
+
+// Closes every account's Chrome window that Flow Studio owns, returning the names of those closed.
+export async function closeAllOwnChromes(): Promise<string[]> {
+  const closed: string[] = [];
+  for (const account of listAccounts()) {
+    if (await closeChrome(account)) closed.push(account.name);
+  }
+  return closed;
 }
 
 export async function getFlowPage(account: Account = currentAccount()): Promise<Page> {

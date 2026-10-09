@@ -619,6 +619,19 @@ const TO_BLACK =
   "Change ONLY the background of this image to pure solid black (#000000), perfectly flat and even. Keep the subject pixel-for-pixel identical: same position, same size, same pose, same crop and framing, same colours, same lighting, every detail and edge unchanged. Do not add any shadow, glow, rim light, reflection or outline.";
 
 export class LocalCore implements Core {
+  // True while any generation is running; `/api/shutdown` and `flow-studio stop` refuse without force.
+  get busy(): boolean {
+    return this.queue.busy;
+  }
+
+  // Jobs currently running, reported by `/api/shutdown` when refusing or when forced to interrupt them.
+  runningJobs(): { id: string; scene: string; account?: string }[] {
+    return this.queue
+      .list()
+      .filter((j) => j.status === "running")
+      .map((j) => ({ id: j.id, scene: j.params.file_stem, ...(j.account ? { account: j.account } : {}) }));
+  }
+
   // One worker per enabled account, all running at once; each job runs inside its account, so every Flow step it takes
   // (getFlowPage, downloads) goes to that account's own Chrome.
   private queue: JobQueue = new JobQueue((job, account) => onAccount(account, () => this.run(job)), {

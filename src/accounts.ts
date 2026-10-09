@@ -1,9 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { CONFIG, HOME_DIR } from "./config.js";
 
-export const HOME_DIR = process.env.FLOW_MCP_HOME ?? join(homedir(), ".flow-mcp");
+export { HOME_DIR };
 const ACCOUNTS_FILE = join(HOME_DIR, "accounts.json");
 const SETTINGS_FILE = join(HOME_DIR, "settings.json");
 
@@ -11,7 +11,7 @@ const SETTINGS_FILE = join(HOME_DIR, "settings.json");
 // worker, so several accounts generate at the same time. "main" keeps the exact layout flow-mcp always had (same
 // folder, same port), so a single-account install sees zero changes. The user signs each one in by hand.
 export const MAIN = "main";
-const MAIN_PORT = Number(process.env.FLOW_MCP_CDP_PORT ?? 9333);
+const MAIN_PORT = CONFIG.cdpPort;
 
 // Reserved names that must not be used as account folder names (Windows device names and "default").
 const RESERVED_NAMES = new Set([
@@ -100,6 +100,7 @@ export const accountDir = (a: Account, homeDir = HOME_DIR): string =>
 
 export const profileDir = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "chrome-profile");
 export const downloadDir = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "downloads");
+export const chromeFile = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "chrome.json");
 export const looksFile = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "characters.json");
 export const voicesFile = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "voices.json");
 export const collectionsDir = (a: Account, homeDir = HOME_DIR): string => join(accountDir(a, homeDir), "collections");
