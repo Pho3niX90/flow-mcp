@@ -1,15 +1,14 @@
 import { execFile } from "node:child_process";
-import { FFMPEG_HINT } from "./platform.js";
+import { FFMPEG_HINT, ffmpeg } from "./platform.js";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
 
 // Saves the final frame of a clip so the next scene can start exactly where this one ended.
 export async function extractLastFrame(video: string): Promise<string> {
   const out = video.replace(/\.\w+$/, "") + "-lastframe.jpg";
   try {
-    await run(FFMPEG, ["-y", "-sseof", "-0.2", "-i", video, "-update", "1", "-q:v", "2", out]);
+    await run(ffmpeg(), ["-y", "-sseof", "-0.2", "-i", video, "-update", "1", "-q:v", "2", out]);
   } catch (err) {
     const reason = (err as NodeJS.ErrnoException).code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT})` : String(err);
     throw new Error(`chain_previous needs ffmpeg to grab the previous clip's last frame: ${reason}`);
@@ -22,7 +21,7 @@ export async function extractLastFrame(video: string): Promise<string> {
 export async function extractFirstFrame(video: string): Promise<string> {
   const out = video.replace(/\.\w+$/, "") + "-firstframe.jpg";
   try {
-    await run(FFMPEG, ["-y", "-i", video, "-frames:v", "1", "-q:v", "2", out]);
+    await run(ffmpeg(), ["-y", "-i", video, "-frames:v", "1", "-q:v", "2", out]);
   } catch (err) {
     const reason = (err as NodeJS.ErrnoException).code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT})` : String(err);
     throw new Error(`last_frame needs ffmpeg to grab that clip's first frame: ${reason}`);
@@ -35,7 +34,7 @@ export async function extractFirstFrame(video: string): Promise<string> {
 export async function extractFrameAt(video: string, seconds: number): Promise<string> {
   const out = `${video.replace(/\.\w+$/, "")}-frame-${seconds.toFixed(2)}s.jpg`;
   try {
-    await run(FFMPEG, ["-y", "-ss", seconds.toFixed(3), "-i", video, "-frames:v", "1", "-q:v", "2", out]);
+    await run(ffmpeg(), ["-y", "-ss", seconds.toFixed(3), "-i", video, "-frames:v", "1", "-q:v", "2", out]);
   } catch (err) {
     const reason = (err as NodeJS.ErrnoException).code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT})` : String(err);
     throw new Error(`first_frame_at needs ffmpeg to grab that frame: ${reason}`);

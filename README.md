@@ -105,12 +105,25 @@ Codex, like most MCP apps, gives up on a tool call after 60 seconds, so any call
 45 seconds (creating a character, a 1080p download) answers with a task id instead and keeps working, and
 `flow_wait` collects the result.
 
-**Antigravity** (Google's coding app): add a `flow` entry to `mcp_config.json`. On a Mac it lives in
-`~/.gemini/antigravity/`; you can also open it from the agent panel's **…** menu → **Manage MCP Servers** →
-**View raw config**. Keep any servers already listed and add this one beside them:
+**Antigravity** (Google's coding app): add a `flow` entry to `mcp_config.json`.
+- **macOS / Linux:** `~/.gemini/antigravity/mcp_config.json`
+- **Windows:** `%USERPROFILE%\.gemini\antigravity\mcp_config.json`
+- Or open it from the agent panel's **…** menu → **Manage MCP Servers** → **View raw config**.
+
+Keep any servers already listed and add this one beside them (use doubled backslashes `\\` on Windows, and optionally set `FLOW_MCP_OUTPUT` to store outputs on any drive):
 
 ```json
-{ "mcpServers": { "flow": { "command": "node", "args": ["/absolute/path/to/flow-mcp/dist/index.js"] } } }
+{
+  "mcpServers": {
+    "flow": {
+      "command": "node",
+      "args": ["/absolute/path/to/flow-mcp/dist/index.js"],
+      "env": {
+        "FLOW_MCP_OUTPUT": "/optional/path/to/output"
+      }
+    }
+  }
+}
 ```
 
 **Other MCP apps** (Cursor, VS Code and others) take the same command and arguments in their own MCP

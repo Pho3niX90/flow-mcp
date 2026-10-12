@@ -4,11 +4,9 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { renderEndCard } from "./captions.js";
-import { FFMPEG_HINT, workDir } from "./platform.js";
+import { FFMPEG_HINT, ffmpeg, ffprobe, workDir } from "./platform.js";
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
-const FFPROBE = process.env.FLOW_MCP_FFPROBE ?? "ffprobe";
 
 export interface AssembleOptions {
   dir: string;
@@ -60,7 +58,7 @@ function cropFilter(c: Crop | undefined): { crop: string; cw: number; ch: number
 
 // Fine detail in one frame (variance of a Laplacian over a 480x270 grey copy). Comparable between clips, not absolute.
 async function sharpness(file: string, at: number, sigma = 0): Promise<number> {
-  const { stdout } = await run(FFMPEG, [
+  const { stdout } = await run(ffmpeg(), [
     "-v", "error", "-ss", Math.max(0, at).toFixed(3), "-i", file, "-frames:v", "1",
     "-vf", `${sigma > 0 ? `gblur=sigma=${sigma.toFixed(2)},` : ""}scale=480:270,format=gray`, "-f", "rawvideo", "-",
   ], { encoding: "buffer", maxBuffer: 1 << 22 });
@@ -100,7 +98,7 @@ export async function watermarkMask(samples: { file: string; at: number; vf: str
   const w = width - x0, h = height - y0;
   const frames: Buffer[] = [];
   for (const sm of samples) {
-    const { stdout } = await run(FFMPEG, [
+    const { stdout } = await run(ffmpeg(), [
       "-v", "error", "-ss", Math.max(0, sm.at).toFixed(3), "-i", sm.file, "-frames:v", "1",
       "-vf", `${sm.vf},crop=${w}:${h}:${x0}:${y0},format=gray`, "-f", "rawvideo", "-",
     ], { encoding: "buffer", maxBuffer: 1 << 24 }).catch(() => ({ stdout: Buffer.alloc(0) }));
@@ -168,7 +166,7 @@ async function ghostMarks(file: string, width: number, height: number, mark: { c
   const x0 = Math.max(0, Math.round(mark.cx - mark.r - pad)), x1 = Math.min(width, Math.round(mark.cx + mark.r + pad));
   const y0 = Math.max(0, Math.round(mark.cy - mark.r)), y1 = Math.min(height, Math.round(mark.cy + mark.r));
   const w = x1 - x0, h = y1 - y0, fps = 24;
-  const { stdout } = await run(FFMPEG, ["-v", "error", "-i", file, "-vf", `fps=${fps},crop=${w}:${h}:${x0}:${y0},format=gray`, "-f", "rawvideo", "-"], { encoding: "buffer", maxBuffer: 1 << 30 })
+  const { stdout } = await run(ffmpeg(), ["-v", "error", "-i", file, "-vf", `fps=${fps},crop=${w}:${h}:${x0}:${y0},format=gray`, "-f", "rawvideo", "-"], { encoding: "buffer", maxBuffer: 1 << 30 })
     .catch(() => ({ stdout: Buffer.alloc(0) }));
   const all = stdout as unknown as Buffer;
   const n = Math.floor(all.length / (w * h));
@@ -209,7 +207,7 @@ async function ghostMarks(file: string, width: number, height: number, mark: { c
 
 async function probe(file: string): Promise<ClipInfo> {
   // A raw ffprobe dump ("moov atom not found") told the user nothing. Say which file and what to do about it.
-  const { stdout } = await run(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_type,width,height,duration:format=duration", "-of", "json", file]).catch(() => {
+  const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "stream=codec_type,width,height,duration:format=duration", "-of", "json", file]).catch(() => {
     throw new Error(`"${basename(file)}" isn't a playable video - it may be an unfinished download or a ZIP of several clips. Remove it, or pick other clips.`);
   });
   const data = JSON.parse(stdout) as { streams: { codec_type: string; width?: number; height?: number; duration?: string }[]; format: { duration: string } };
@@ -248,8 +246,8 @@ function defaultClips(dir: string): string[] {
 
 // Pulls the spoken track out of a generated clip so Flow's voices can be used as narration.
 export async function extractAudio(video: string, target: string): Promise<{ output: string; duration: number }> {
-  await run(FFMPEG, ["-y", "-i", video, "-vn", "-af", "highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=120,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
-  const { stdout } = await run(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
+  await run(ffmpeg(), ["-y", "-i", video, "-vn", "-af", "highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=120,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
+  const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
   return { output: target, duration: Number(stdout.trim()) };
 }
 
@@ -279,12 +277,12 @@ export async function voiceTrack(lines: VoiceLine[], out: string): Promise<{ fil
       const from = Math.max(0, l.from ?? 0);
       const trim = `atrim=start=${from.toFixed(3)}${l.to !== undefined ? `:end=${l.to.toFixed(3)}` : ""}`;
       const cut = join(work, `line-${i + 1}.wav`);
-      await run(FFMPEG, ["-v", "error", "-y", "-i", l.file, "-vn", "-af", `${trim},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,${quiet(0.04)},areverse,${quiet(0.08)},areverse`, "-c:a", "pcm_s16le", cut]).catch(
+      await run(ffmpeg(), ["-v", "error", "-y", "-i", l.file, "-vn", "-af", `${trim},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,${quiet(0.04)},areverse,${quiet(0.08)},areverse`, "-c:a", "pcm_s16le", cut]).catch(
         (err: NodeJS.ErrnoException & { stderr?: string }) => {
           throw new Error(err.code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT}).` : `Could not cut voice line ${i + 1}: ${(err.stderr ?? String(err)).slice(-300)}`);
         },
       );
-      const { stdout } = await run(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", cut]);
+      const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", cut]);
       const seconds = Number(stdout.trim());
       if (!(seconds > 0.05)) throw new Error(`Voice line ${i + 1} has no speech in it (from ${from}${l.to !== undefined ? ` to ${l.to}` : ""}).`);
       cuts.push({ file: cut, seconds });
@@ -316,7 +314,7 @@ export async function voiceTrack(lines: VoiceLine[], out: string): Promise<{ fil
     // and this file is only a step on the way to the film.
     args.push("-filter_complex", filters.join(";"), "-map", "[a]", "-c:a", "pcm_s16le", out);
     try {
-      await run(FFMPEG, args, { maxBuffer: 32 * 1024 * 1024 });
+      await run(ffmpeg(), args, { maxBuffer: 32 * 1024 * 1024 });
     } catch (err) {
       const e = err as NodeJS.ErrnoException & { stderr?: string };
       throw new Error(e.code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT}).` : `ffmpeg could not build the voice track: ${(e.stderr ?? String(e)).slice(-400)}`);
@@ -400,11 +398,11 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
     const last = clips.length - 1;
     const { width: w, height: h } = infos.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a));
     const still = join(work, "last.jpg");
-    await run(FFMPEG, ["-y", "-ss", Math.max(0, windows[last].to - 0.1).toFixed(3), "-i", clips[last], "-frames:v", "1", "-q:v", "2", still]).catch(() => undefined);
+    await run(ffmpeg(), ["-y", "-ss", Math.max(0, windows[last].to - 0.1).toFixed(3), "-i", clips[last], "-frames:v", "1", "-q:v", "2", still]).catch(() => undefined);
     const png = await renderEndCard(o.end_card.text, w, h, still, join(work, "card.png"));
     const seconds = Math.min(10, Math.max(1, o.end_card.seconds ?? 2.5));
     const card = join(o.dir, `${o.output_name.replace(/[^\w.-]+/g, "_").replace(/\.mp4$/, "")}-endcard.mp4`);
-    await run(FFMPEG, [
+    await run(ffmpeg(), [
       "-y", "-loop", "1", "-t", seconds.toFixed(2), "-i", png, "-f", "lavfi", "-t", seconds.toFixed(2), "-i", "anullsrc=r=48000:cl=stereo",
       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24", "-c:a", "aac", "-shortest", card,
     ]);
@@ -416,7 +414,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
   // A narration longer than the footage would be cut off, so the last frame is held until the voice finishes.
   let hold = 0;
   if (o.hold_last_frame !== false && o.voiceover) {
-    const { stdout } = await run(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", o.voiceover]);
+    const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", o.voiceover]);
     hold = Math.max(0, Number(stdout.trim()) + 0.6 - infos.reduce((sum, i) => sum + i.duration, 0));
   }
   if (o.end_hold) hold = Math.max(hold, o.end_hold.seconds);
@@ -553,7 +551,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
     output,
   );
   try {
-    await run(FFMPEG, args, { maxBuffer: 32 * 1024 * 1024 });
+    await run(ffmpeg(), args, { maxBuffer: 32 * 1024 * 1024 });
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { stderr?: string };
     throw new Error(e.code === "ENOENT" ? `ffmpeg is not installed (${FFMPEG_HINT}).` : `ffmpeg failed: ${(e.stderr ?? String(e)).slice(-600)}`);
@@ -580,7 +578,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
       });
       const fixed = output.replace(/\.mp4$/, "") + "-ghosts.mp4";
       try {
-        await run(FFMPEG, ["-y", "-v", "error", "-i", output, "-vf", steps.join(","), "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "copy", "-movflags", "+faststart", fixed], { maxBuffer: 32 * 1024 * 1024 });
+        await run(ffmpeg(), ["-y", "-v", "error", "-i", output, "-vf", steps.join(","), "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "copy", "-movflags", "+faststart", fixed], { maxBuffer: 32 * 1024 * 1024 });
         renameSync(fixed, output);
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -596,7 +594,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
     lufs = await integratedLoudness(output);
     if (lufs !== undefined && Math.abs(lufs - target) > 0.3) {
       const fixed = output.replace(/\.mp4$/, "") + "-level.mp4";
-      await run(FFMPEG, [
+      await run(ffmpeg(), [
         "-y", "-i", output, "-c:v", "copy",
         "-af", `volume=${(target - lufs).toFixed(2)}dB,alimiter=limit=0.84:level=false:attack=2:release=50`,
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", fixed,
@@ -613,7 +611,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
 }
 
 async function integratedLoudness(file: string): Promise<number | undefined> {
-  const { stderr } = await run(FFMPEG, ["-hide_banner", "-i", file, "-vn", "-af", "loudnorm=print_format=json", "-f", "null", "-"], { maxBuffer: 32 * 1024 * 1024 });
+  const { stderr } = await run(ffmpeg(), ["-hide_banner", "-i", file, "-vn", "-af", "loudnorm=print_format=json", "-f", "null", "-"], { maxBuffer: 32 * 1024 * 1024 });
   const m = String(stderr).match(/"input_i"\s*:\s*"(-?[\d.]+)"/);
   return m ? Number(m[1]) : undefined;
 }

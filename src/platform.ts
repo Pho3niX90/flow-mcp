@@ -15,6 +15,40 @@ export const BIN = IS_MAC ? "the Mac's Trash" : IS_WIN ? "the Recycle Bin" : "th
 
 export const FFMPEG_HINT = IS_MAC ? "brew install ffmpeg" : IS_WIN ? "winget install Gyan.FFmpeg" : "sudo apt install ffmpeg";
 
+// A process started before ffmpeg was installed keeps its old PATH (Claude Desktop's flow-mcp lives for days), so a bare
+// "ffmpeg" fails with ENOENT even though winget just installed it. Look on PATH first, then in the places the installers
+// put it, and only then give back the bare name so the error message still carries FFMPEG_HINT.
+export function findTool(name: string): string {
+  const exe = IS_WIN ? `${name}.exe` : name;
+  for (const dir of (process.env.PATH ?? "").split(IS_WIN ? ";" : ":")) {
+    if (dir && existsSync(join(dir, exe))) return join(dir, exe);
+  }
+  const roots: string[] = [];
+  if (IS_WIN) {
+    const local = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    for (const base of [join(local, "Microsoft", "WinGet", "Packages"), join(local, "Microsoft", "WinGet", "Links")]) {
+      if (!existsSync(base)) continue;
+      if (base.endsWith("Links")) roots.push(base);
+      else for (const pkg of readdirSync(base)) if (/ffmpeg/i.test(pkg)) roots.push(join(base, pkg));
+    }
+  } else {
+    roots.push("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin");
+  }
+  for (const root of roots) {
+    const direct = join(root, exe);
+    if (existsSync(direct)) return direct;
+    if (!IS_WIN) continue;
+    for (const sub of readdirSync(root)) {
+      const inBin = join(root, sub, "bin", exe);
+      if (existsSync(inBin)) return inBin;
+    }
+  }
+  return name;
+}
+
+export const ffmpeg = (): string => process.env.FLOW_MCP_FFMPEG ?? findTool("ffmpeg");
+export const ffprobe = (): string => process.env.FLOW_MCP_FFPROBE ?? findTool("ffprobe");
+
 // Where working files go while something is being made: FLOW_MCP_TMP when set; otherwise a "tmp" folder inside
 // FLOW_MCP_HOME when that is set, so someone who moved the tool to another drive gets its working files there too
 // (a film being cut can be gigabytes, and the system's temp folder is on the system drive); otherwise the system's
