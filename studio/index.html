@@ -297,7 +297,7 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           <div class="phrase" id="n_engineNote"></div>
           <div id="n_keyWrap">
             <label class="f" for="n_key">Google AI Studio key</label>
-            <div class="rowbtns" style="margin-top:0;flex-wrap:nowrap"><input type="password" id="n_key" autocomplete="off" spellcheck="false" placeholder="Paste your key" style="flex:1;min-width:0"><button type="button" class="btn small" id="n_keysave">Save key</button></div>
+            <div class="rowbtns" style="margin-top:0;flex-wrap:nowrap"><input type="password" id="n_key" autocomplete="off" spellcheck="false" placeholder="Paste your key" style="flex:1;min-width:0"><button type="button" class="btn small" id="n_keysave">Save key</button><button type="button" class="btn small ghost" id="n_keycheck" hidden>Check key</button></div>
             <p class="empty" id="n_keyStatus" style="margin-top:6px"></p>
           </div>
           <div class="grid2">
@@ -712,8 +712,9 @@ function renderNarrate() {
     ? "Google's own text-to-speech — the same voices Flow uses, free on the AI Studio tier with a daily limit, and no Flow credits. If the limit runs out, the take is recorded with Kokoro."
     : `<b>Needs a free key.</b> Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and paste it below. Same voices as Flow, free, no length limit.`;
   $("#n_keyWrap").hidden = eng !== "gemini";
+  $("#n_keycheck").hidden = !VOICES.gemini_ready;
   $("#n_keyStatus").innerHTML = VOICES.gemini_ready
-    ? `A key is saved on ${PLACE.computer}. Paste a new one only to replace it.`
+    ? `A key is saved on ${PLACE.computer}. Check key asks Google whether it still works; paste a new one only to replace it.`
     : `Paste it here, not into a chat — it's saved only on ${PLACE.computer} and checked with Google first.`;
   const words = $("#n_text").value.trim().split(/\s+/).filter(Boolean).length;
   const secs = Math.ceil(words / 2.5 / (kokoro ? (S.narrate.speed ?? 100) / 100 : 1));
@@ -812,6 +813,18 @@ $("#n_keysave").onclick = async () => {
     toast("Key saved");
   } catch (err) { $("#n_keyStatus").innerHTML = `<span style="color:var(--bad)">${esc(err.message)}</span>`; }
   b.disabled = false; b.textContent = "Save key";
+};
+
+$("#n_keycheck").onclick = async () => {
+  if (!guard()) return;
+  const b = $("#n_keycheck"); b.disabled = true; b.textContent = "Checking…";
+  try {
+    const out = await api("check_key");
+    $("#n_keyStatus").innerHTML = out.ok
+      ? `Google accepts the saved key (ends in …${esc(out.ending)}). Google voices are ready.`
+      : `<span style="color:var(--bad)">${esc(out.error)}</span>`;
+  } catch (err) { $("#n_keyStatus").innerHTML = `<span style="color:var(--bad)">${esc(err.message)}</span>`; }
+  b.disabled = false; b.textContent = "Check key";
 };
 
 /* ---------- cut ---------- */

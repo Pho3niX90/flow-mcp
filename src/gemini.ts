@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { HOME_DIR } from "./chrome.js";
@@ -47,13 +47,38 @@ export async function saveGeminiKey(raw: string): Promise<{ saved: true; ending:
   if (!/^[A-Za-z0-9._~+/=-]{20,512}$/.test(key) || /^(YOUR|PASTE|<|\$)/i.test(key) || /_KEY|KEY_HERE|EXAMPLE/i.test(key)) {
     throw new Error("That doesn't look like a Google AI Studio key. Copy the whole key from aistudio.google.com/apikey, with no spaces.");
   }
-  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { headers: { "x-goog-api-key": key } }).catch(() => null);
+  const res = await askGoogle(key);
   if (!res) throw new Error("Couldn't reach Google to check the key. Check your internet connection and try again.");
   if (!res.ok) throw new Error("Google didn't accept that key. Copy it again from aistudio.google.com/apikey. Your previous key, if any, is unchanged.");
   mkdirSync(dirname(KEY_FILE), { recursive: true });
   writeFileSync(KEY_FILE, key, { mode: 0o600 });
   chmodSync(KEY_FILE, 0o600);
   return { saved: true, ending: key.slice(-4) };
+}
+
+// Lists one model with the key in a header (never in the URL): proves the key works and spends no speech quota.
+const askGoogle = (key: string) =>
+  fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", {
+    headers: { "x-goog-api-key": key },
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => null);
+
+// The panel used to say "a key is saved" whenever the file existed, so a deleted or restricted key only showed up as
+// a failed narration. This asks Google about the saved key; like saving, it is panel-only and returns just the ending.
+export async function checkGeminiKey(): Promise<{ ok: boolean; ending?: string; error?: string }> {
+  const key = geminiKey();
+  if (!key) return { ok: false, error: "No key is saved yet." };
+  const ending = key.slice(-4);
+  const res = await askGoogle(key);
+  if (!res) return { ok: false, ending, error: "Couldn't reach Google to check the key. Check your internet connection and try again." };
+  if (!res.ok) {
+    return {
+      ok: false,
+      ending,
+      error: `Google refused the saved key (HTTP ${res.status}). It may have been deleted or restricted: paste a new one from aistudio.google.com/apikey.`,
+    };
+  }
+  return { ok: true, ending };
 }
 
 interface TtsPart {
@@ -99,7 +124,7 @@ export async function speakWithGemini(text: string, voice: string, target: strin
   ]);
   const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
   const duration = Number(stdout.trim());
-  writeFileSync(raw, "");
-  await run("rm", ["-f", raw]).catch(() => {});
+  // There is no `rm` on Windows; that left an empty .pcm beside every narration.
+  rmSync(raw, { force: true });
   return { output: target, duration };
 }

@@ -1,8 +1,7 @@
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import type { CDPSession, Locator, Page } from "playwright-core";
-import { HOME_DIR, getFlowPage, inEnglish } from "./chrome.js";
+import { HOME_DIR, OUTPUT_ROOT, getFlowPage, inEnglish } from "./chrome.js";
 import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
@@ -42,8 +41,21 @@ export async function getFlowState(detailed = false): Promise<FlowState> {
   return state;
 }
 
+// Flow's "Rights to use this image" agreement opens over everything after an upload and survives Escape, so every
+// later job timed out behind it looking for some other button (2026-10-13). Agreeing is the user's call, never ours:
+// stop with a message that says exactly what to click.
+async function failOnRightsDialog(page: Page): Promise<void> {
+  const dialog = page.getByRole("dialog").filter({ hasText: "Rights to use this image" });
+  if (await dialog.isVisible().catch(() => false)) {
+    throw new Error(
+      'Flow is asking you to confirm "Rights to use this image" (shown once, on the first upload). Read it in the Flow Chrome window and click I agree or Cancel there, then run this again. Nothing was generated.',
+    );
+  }
+}
+
 // Menus close on Escape; the account panel does not and needs its own close button.
 async function dismissOverlays(page: Page): Promise<void> {
+  await failOnRightsDialog(page);
   await leaveSideMenu(page);
   await page.keyboard.press("Escape");
   const closePanel = page.getByRole("button", { name: "Close account panel" });
@@ -444,13 +456,17 @@ const ASSET_PREFIX = "asset:";
 // a half-processed upload can never be taken for the next generation's result.
 async function waitForUpload(page: Page, name: string, timeoutMs: number): Promise<void> {
   const tile = page.locator(`flow-grid-tile-container[aria-label="${name.replace(/"/g, '\\"')}"]:has([data-media-id])`);
-  await tile
-    .first()
-    .waitFor({ state: "attached", timeout: timeoutMs })
-    .catch(() => {
-      throw new Error(`Flow did not finish processing the upload "${name}" within ${Math.round(timeoutMs / 1000)}s.`);
-    });
-  await pause(page, 1000);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await tile.count()) {
+      await pause(page, 1000);
+      return;
+    }
+    // The first upload ever can stop at Flow's rights agreement; say so now rather than after the full timeout.
+    await failOnRightsDialog(page);
+    await pause(page, 1000);
+  }
+  throw new Error(`Flow did not finish processing the upload "${name}" within ${Math.round(timeoutMs / 1000)}s.`);
 }
 
 // Uploads under a unique filename so the asset can be picked unambiguously afterwards.
@@ -523,8 +539,17 @@ export async function attachAsset(page: Page, opener: Locator, assetName: string
   await option.waitFor({ state: "visible", timeout: 10_000 });
   await option.click();
   const add = page.getByRole("button", { name: "Add to prompt", exact: true });
-  if (await add.waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false)) await add.click().catch(() => {});
-  await list.waitFor({ state: "hidden", timeout: 10_000 });
+  const viaAdd = await add.waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false);
+  if (viaAdd) await add.click().catch(() => {});
+  const closed = () => list.waitFor({ state: "hidden", timeout: 5000 }).then(() => true, () => false);
+  // A second reference once left the ingredients picker open after "Add to prompt" and the job died here
+  // (2026-10-13). Press Add again, then Escape - only in the ingredients picker, where runGeneration counts the
+  // attached chips afterwards and stops before spending anything. A frame picker is never escaped out of.
+  if (!(await closed()) && viaAdd) {
+    if (await add.isVisible().catch(() => false)) await add.click().catch(() => {});
+    if (!(await closed())) await page.keyboard.press("Escape");
+  }
+  await list.waitFor({ state: "hidden", timeout: 5000 });
   await pause(page, 500);
 }
 
@@ -1103,7 +1128,7 @@ async function clickProjectNav(page: Page, item: string): Promise<boolean> {
     .filter({ hasText: new RegExp(`${item}\\s*$`) })
     .first();
   if (!(await button.isVisible().catch(() => false))) return false;
-  await button.click({ timeout: 5000 });
+  await button.click({ timeout: 5000 }).catch(() => button.dispatchEvent("click", undefined, { timeout: 10_000 }));
   await leaveSideMenu(page);
   return true;
 }
@@ -1340,7 +1365,7 @@ async function leaveCharacterEditor(page: Page): Promise<void> {
 // download through the same watched folders as every other file.
 async function savePortrait(page: Page, name: string): Promise<string> {
   await useOwnDownloadDir(page);
-  const dir = join(process.env.FLOW_MCP_OUTPUT ?? join(homedir(), "flow-mcp-out"), "_cast");
+  const dir = join(OUTPUT_ROOT, "_cast");
   mkdirSync(dir, { recursive: true });
   const picture = page.getByRole("img", { name: "Generated character image" }).first();
   const button = page.getByRole("button", { name: "Download image", exact: true });
@@ -1573,7 +1598,7 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
   if (!c.image) {
     if (!c.describe) throw new Error("Pass either an image or a description for the character.");
     if (job) job.progress = "drawing the character";
-    const dir = join(process.env.FLOW_MCP_OUTPUT ?? join(homedir(), "flow-mcp-out"), "_cast");
+    const dir = join(OUTPUT_ROOT, "_cast");
     const made = await runGeneration({
       ...(job ?? ({ id: "char", status: "running", files: [], attempts: 1, createdAt: "" } as unknown as Job)),
       files: [],
