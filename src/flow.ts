@@ -13,6 +13,7 @@ export interface FlowState {
   url: string;
   signedIn: boolean;
   inProject: boolean;
+  project?: string;
   plan?: string;
   credits_remaining?: number;
   composer?: string;
@@ -40,6 +41,12 @@ export async function getFlowState(detailed = false): Promise<FlowState> {
   const signedIn = !/\/about|accounts\.google\.com/.test(url);
   const inProject = /\/project\//.test(url);
   const state: FlowState = { url, signedIn, inProject };
+  if (signedIn && inProject) {
+    state.project =
+      (await page.getByRole("heading", { level: 1 }).first().innerText({ timeout: 1500 }).then((t) => t.trim(), () => undefined)) ||
+      (await page.getByRole("textbox", { name: "Editable text" }).first().inputValue({ timeout: 1000 }).then((t) => t.trim(), () => undefined)) ||
+      (await page.title().then((t) => t.replace(/^Google Flow\s*[-–]\s*/, "").trim() || undefined, () => undefined));
+  }
   if (!signedIn) state.hint = "Not signed in. Run `npm run login` and sign in to Google in the Flow Chrome window.";
   else if (!inProject) {
     const names = await listProjects(page).then((p) => p.map((x) => x.name), () => []);
@@ -64,21 +71,68 @@ const PROJECT_CARD = "flow-project-card";
 export interface FlowProject {
   name: string;
   id: string;
+  url?: string;
+  current?: boolean;
 }
 
-export async function listProjects(page: Page): Promise<FlowProject[]> {
+async function readProjectsOnPage(target: Page): Promise<FlowProject[]> {
+  await target.locator(`${PROJECT_CARD}, a[href*="/project/"]`).first().waitFor({ state: "attached", timeout: 15_000 }).catch(() => {});
+  await pause(target, 1500);
+  return target.evaluate((sel) => {
+    const seen = new Set<string>();
+    const out: { name: string; id: string }[] = [];
+    for (const card of document.querySelectorAll(sel)) {
+      const id = card.querySelector('a[href*="/project/"]')?.getAttribute("href")?.match(/[0-9a-f-]{36}/)?.[0];
+      const name = ((card as HTMLElement).innerText || "").split(String.fromCharCode(10))[0].trim();
+      if (id && name && !seen.has(id)) {
+        seen.add(id);
+        out.push({ name, id });
+      }
+    }
+    if (out.length) return out;
+    // Fallback if Flow renders project links without the flow-project-card wrapper.
+    const skip = new Set(["", "Edit project title", "Delete project", "Open project"]);
+    for (const a of Array.from(document.querySelectorAll('a[href*="/project/"]'))) {
+      const id = a.getAttribute("href")?.match(/\/project\/([0-9a-f-]{36})/)?.[1];
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      let card: Element = a;
+      while (card.parentElement && card.parentElement.querySelectorAll('a[href*="/project/"]').length === 1) card = card.parentElement;
+      const lines = ((card as HTMLElement).innerText ?? "").split("\n").map((l) => l.trim());
+      out.push({ id, name: lines.find((l) => !skip.has(l)) ?? id });
+    }
+    return out;
+  }, PROJECT_CARD);
+}
+
+// Lists projects from Flow's home page. When `spareTab` is true (or when called while a project is open via
+// flow_projects), reads them in a temporary tab and always closes it so the working project tab is not disturbed.
+export async function listProjects(page: Page, opts: { spareTab?: boolean } = {}): Promise<FlowProject[]> {
+  if (opts.spareTab) {
+    const tab = await page.context().newPage();
+    try {
+      await tab.goto(inEnglish(FLOW_URL), { waitUntil: "domcontentloaded" });
+      return await readProjectsOnPage(tab);
+    } finally {
+      await tab.close().catch(() => {});
+    }
+  }
   if (/\/project\//.test(page.url())) {
     await page.goto(inEnglish(FLOW_URL), { waitUntil: "domcontentloaded" });
     await pause(page, 2500);
   }
-  await page.locator(PROJECT_CARD).first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
-  return page.evaluate((sel) => {
-    return [...document.querySelectorAll(sel)].flatMap((card) => {
-      const id = card.querySelector('a[href*="/project/"]')?.getAttribute("href")?.match(/[0-9a-f-]{36}/)?.[0];
-      const name = ((card as HTMLElement).innerText || "").split(String.fromCharCode(10))[0].trim();
-      return id && name ? [{ name, id }] : [];
-    });
-  }, PROJECT_CARD);
+  return readProjectsOnPage(page);
+}
+
+// Lists the account's projects without disturbing the open project tab, marking which one is currently open.
+export async function listProjectsSummary(): Promise<{ projects: (FlowProject & { url: string; current: boolean })[]; current?: string }> {
+  const state = await getFlowState();
+  if (!state.signedIn) throw new Error(state.hint);
+  const page = await getFlowPage();
+  const here = page.url().match(/\/project\/([0-9a-f-]{36})/)?.[1];
+  const found = await listProjects(page, { spareTab: /\/project\//.test(page.url()) });
+  const projects = found.map((p) => ({ name: p.name, id: p.id, url: `https://flow.google.com/project/${p.id}`, current: p.id === here }));
+  return { projects, current: projects.find((p) => p.current)?.name };
 }
 
 // Opens a project by name, so a run can recover on its own instead of telling the user to click. A uuid or a full
@@ -89,9 +143,7 @@ export async function openProject(wanted: string): Promise<FlowProject & { url: 
   if (!state.signedIn) throw new Error(state.hint);
   const page = await getFlowPage();
 
-  // Looking the name up means leaving the project page, so a refused name would otherwise CLOSE the project that was
-  // open - caught in testing, where two failed lookups in a row left Flow on the start page. Whatever happens, a
-  // failure puts the window back where it was.
+  // Whatever happens, a failure puts the window back where it was.
   const wasAt = page.url();
   const restore = async () => {
     if (/\/project\//.test(wasAt) && page.url() !== wasAt) {
@@ -104,7 +156,7 @@ export async function openProject(wanted: string): Promise<FlowProject & { url: 
   let project: FlowProject | undefined;
   if (direct) project = { name: wanted, id: direct };
   else {
-    const all = await listProjects(page).catch(async (err) => {
+    const all = await listProjects(page, { spareTab: /\/project\//.test(wasAt) }).catch(async (err) => {
       await restore();
       throw err;
     });
@@ -1689,17 +1741,7 @@ export async function editCharacter(name: string, change?: string, job?: Job): P
   const state = await getFlowState();
   if (!state.signedIn || !state.inProject) throw new Error(state.hint);
   const page = await getFlowPage();
-  await leaveCharacterEditor(page);
-  await dismissOverlays(page);
-  await openProjectNav(page, "Characters");
-  await pause(page, 2500);
-
-  const card = page.locator("flow-character-tile").filter({ hasText: name }).first();
-  if (!(await card.isVisible().catch(() => false))) throw new Error(`No character called "${name}". Use flow_characters to list them.`);
-  await card.scrollIntoViewIfNeeded();
-  await card.click();
-  await page.waitForURL(/\/character\/[0-9a-f-]{36}/, { timeout: 20_000 });
-  await pause(page, 2000);
+  await openCharacter(page, name);
 
   if (change) {
     const portraitImg = page.getByRole("img", { name: "Generated character image" }).first();
@@ -1924,7 +1966,121 @@ export function rememberCharacter(name: string, look: string): void {
   writeFileSync(LOOKS_FILE, JSON.stringify(all, null, 2));
 }
 
-export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ name: string; url: string; portrait?: string }> {
+// Which voice each character has. Flow shows it in the character editor and nowhere else, and a copy of a character (a new
+// outfit) has to get the SAME voice as the original, so the choice is kept on disk too, keyed by name.
+const VOICES_FILE = join(HOME_DIR, "voices.json");
+const loadVoices = (): Record<string, string> => {
+  try {
+    return JSON.parse(readFileSync(VOICES_FILE, "utf8")) as Record<string, string>;
+  } catch {
+    return {};
+  }
+};
+export const characterVoice = (name: string): string | undefined => loadVoices()[name.toLowerCase()];
+export function rememberVoice(name: string, voice: string | undefined): void {
+  const all = loadVoices();
+  if (voice) all[name.toLowerCase()] = voice;
+  else delete all[name.toLowerCase()];
+  mkdirSync(HOME_DIR, { recursive: true });
+  writeFileSync(VOICES_FILE, JSON.stringify(all, null, 2));
+}
+
+// A tile's textContent is "<name>accessibility_newfavoritemore_vert" (icon ligatures glued on, no space; innerText has a
+// newline), so "Ollie" must not match "Ollie_Village": the name has to be followed by the icon text or the end. The old
+// plain hasText search opened the wrong character for any name that starts another (2026-10-19: "Ollie" opened
+// "Ollie_Village").
+export const characterTilePattern = (name: string) =>
+  new RegExp(`^\\s*${escapeRe(name)}(?=\\s|$|accessibility_new|person|favorite)`);
+const characterTile = (page: Page, name: string) =>
+  page.locator("flow-character-tile").filter({ hasText: characterTilePattern(name) }).first();
+
+// Opens a character's editor page from the Characters section.
+async function openCharacter(page: Page, name: string): Promise<void> {
+  await leaveCharacterEditor(page);
+  await dismissOverlays(page);
+  await openProjectNav(page, "Characters");
+  await pause(page, 2500);
+  const card = characterTile(page, name);
+  if (!(await card.isVisible().catch(() => false))) throw new Error(`No character called "${name}". Use flow_characters to list them.`);
+  await card.scrollIntoViewIfNeeded();
+  await card.click();
+  await page.waitForURL(/\/character\/[0-9a-f-]{36}/, { timeout: 20_000 });
+  await pause(page, 2000);
+}
+
+// The editor shows the voice as a button NAMED after it ("orus"), right before "Play preview" and "Remove". A character
+// without one shows "Select a voice" instead (mapped live 2026-10-19).
+export function parseVoiceFromSnapshot(snap: string): string | undefined {
+  if (/button "Select a voice"/.test(snap)) return undefined;
+  const lines = snap.split(/\r?\n/);
+  const at = lines.findIndex((l) => l.includes('button "Play preview"'));
+  return at > 0 ? lines[at - 1].match(/button "([^"]+)"/)?.[1] : undefined;
+}
+async function readVoice(page: Page): Promise<string | undefined> {
+  return parseVoiceFromSnapshot(await page.locator("main").first().ariaSnapshot());
+}
+
+// Chooses a stock voice in the open character editor. Both the "Select a voice" button and the current voice's button
+// open the same dialog. The list shows only the first voices, so the search box reaches the rest. "Customize performance"
+// would generate a NEW voice, so it is left alone.
+async function pickVoice(page: Page, voice: string): Promise<void> {
+  const current = await readVoice(page);
+  const opener = current ? page.getByRole("button", { name: current, exact: true }) : page.getByRole("button", { name: "Select a voice" });
+  await opener.first().click();
+  const dialog = page.getByRole("dialog").first();
+  const list = dialog.getByRole("listbox", { name: "Asset list" });
+  await list.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("textbox", { name: "Search assets" }).fill(voice).catch(() => {});
+  await pause(page, 900);
+  const option = optionByName(list, voice);
+  if (!(await option.isVisible().catch(() => false))) {
+    const available = (await list.getByRole("option").allInnerTexts()).map((t) => t.split("\n").filter((l) => l && l !== "voice_selection").join(" - "));
+    await dialog.getByRole("button", { name: "Close" }).click().catch(() => {});
+    throw new Error(`Voice "${voice}" not found. Available: ${available.join("; ")}`);
+  }
+  await option.click();
+  await dialog.getByRole("button", { name: "Add to character", exact: true }).click();
+  await pause(page, 1200);
+  const now = await readVoice(page);
+  if (now?.toLowerCase() !== voice.toLowerCase()) throw new Error(`Flow did not take the voice: ${now ? `"${now}"` : "no voice"} instead of "${voice}".`);
+}
+
+// Gives an existing character a stock voice. Returns the old one too.
+export async function setCharacterVoice(name: string, voice: string): Promise<{ name: string; voice: string; previous?: string }> {
+  const state = await getFlowState();
+  if (!state.signedIn || !state.inProject) throw new Error(state.hint);
+  const page = await getFlowPage();
+  await openCharacter(page, name);
+  const previous = await readVoice(page);
+  try {
+    if (previous?.toLowerCase() !== voice.toLowerCase()) await pickVoice(page, voice);
+  } finally {
+    await leaveCharacterEditor(page);
+  }
+  rememberVoice(name, voice.toLowerCase());
+  return { name, voice: voice.toLowerCase(), previous };
+}
+
+// Reads what voice each named character has, straight from Flow (about 8 s each), and remembers it.
+export async function characterVoices(names: string[]): Promise<Record<string, string | null>> {
+  const state = await getFlowState();
+  if (!state.signedIn || !state.inProject) throw new Error(state.hint);
+  const page = await getFlowPage();
+  const out: Record<string, string | null> = {};
+  try {
+    for (const name of names) {
+      await openCharacter(page, name);
+      const voice = await readVoice(page);
+      rememberVoice(name, voice);
+      out[name] = voice ?? null;
+    }
+  } finally {
+    await leaveCharacterEditor(page);
+  }
+  return out;
+}
+
+export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ name: string; url: string; portrait?: string; voice?: string }> {
   const state = await getFlowState();
   if (!state.signedIn || !state.inProject) throw new Error(state.hint);
   const page = await getFlowPage();
@@ -1995,19 +2151,25 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
 
   if (c.voice) {
     await page.getByRole("button", { name: "Select a voice" }).click();
-    const voices = page.getByRole("listbox", { name: "Asset list" });
+    const dialog = page.getByRole("dialog").first();
+    const voices = dialog.getByRole("listbox", { name: "Asset list" });
     await voices.waitFor({ state: "visible", timeout: 10_000 });
+    await dialog.getByRole("textbox", { name: "Search assets" }).fill(c.voice).catch(() => {});
+    await pause(page, 900);
     const option = optionByName(voices, c.voice);
     if (!(await option.isVisible().catch(() => false))) {
       const available = (await voices.getByRole("option").allInnerTexts()).map((t) => t.split("\n").filter((l) => l && l !== "voice_selection").join(" - "));
-      await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+      await dialog.getByRole("button", { name: "Close" }).click().catch(() => {});
       throw new Error(`Voice "${c.voice}" not found. Character was created without a voice. Available: ${available.join("; ")}`);
     }
     await option.click();
     // "Customize performance" would turn this into generating a new voice (preview + save); stock voices only.
-    await page.getByRole("button", { name: "Add to character", exact: true }).click();
+    await dialog.getByRole("button", { name: "Add to character", exact: true }).click();
     await pause(page, 1000);
   }
+  // Whatever voice the character ended up with (Flow may give one on its own) is kept for later copies.
+  const voice = await readVoice(page).catch(() => undefined);
+  rememberVoice(c.name, voice);
 
   // Flow labels this "Done editing" or just "Done" depending on the panel state.
   await page.getByRole("button", { name: /^Done( editing)?$/ }).first().click();
@@ -2018,7 +2180,7 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
   if (await clear.isVisible().catch(() => false)) await clear.click();
   await showAllMedia(page);
   if (c.describe) rememberCharacter(c.name, c.describe);
-  return { name: c.name, url, portrait };
+  return { name: c.name, url, portrait, voice };
 }
 
 const EDIT_TIMEOUT_MS = 10 * 60_000;

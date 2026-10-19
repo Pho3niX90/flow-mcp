@@ -230,7 +230,7 @@ server.registerTool(
   {
     title: "Create a reusable character",
     description:
-      "Create a reusable Flow character (person, mascot, product) so it looks the same in every scene. Free. Give `describe` and Flow draws the portrait first, or `image` to use a picture you already have; optionally a personality and a stock voice. Afterwards pass 'asset:<name>' in a scene's reference_images.",
+      "Create a reusable Flow character (person, mascot, product) so it looks the same in every scene. Free. Give `describe` and Flow draws the portrait first, or `image` to use a picture you already have; optionally a personality and a stock voice (or `voice_from` to copy another character's voice for an outfit variation). Reports the voice the character ended up with. Afterwards pass 'asset:<name>' in a scene's reference_images.",
     inputSchema: shapes.character,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -242,11 +242,23 @@ server.registerTool(
   {
     title: "Restyle an existing character",
     description:
-      "Change how an existing character looks without creating a new one (Flow redraws the portrait in place, free), and save the new portrait to <films>/_cast. The character keeps its name, personality and voice, so every scene that references it picks up the new look. Pass `look` with the full updated description so scene prompts stop quoting the old one. With no `change` it only saves the current portrait.",
+      "Change how an existing character looks without creating a new one (Flow redraws the portrait in place, free), and save the new portrait to <films>/_cast. The character keeps its name, personality and voice, so every scene that references it picks up the new look. Also changes a character's voice with `voice` or `voice_from` (a voice-only call skips the portrait redraw). Pass `look` with the full updated description so scene prompts stop quoting the old one. With no `change` or voice it only saves the current portrait.",
     inputSchema: shapes.character_edit,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   (args) => reply(patient("flow_character_edit", core.character_edit(args))),
+);
+
+server.registerTool(
+  "flow_projects",
+  {
+    title: "List Flow projects",
+    description:
+      "List the projects on the user's Flow home page without disturbing the currently open project tab, and mark which one is open. Characters, assets and generations are per project.",
+    inputSchema: shapes.projects,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  () => reply(patient("flow_projects", core.projects())),
 );
 
 server.registerTool(
@@ -265,7 +277,7 @@ server.registerTool(
   {
     title: "Open a Flow project",
     description:
-      "Open one of the account's Flow projects in the Chrome window, by the name Flow shows (or its uuid/URL), so a run can carry on without the user clicking. flow_status lists the names whenever no project is open. Refuses a name that matches more than one project.",
+      "Open one of the account's Flow projects in the Chrome window, by the name Flow shows (or its uuid/URL), so a run can carry on without the user clicking. flow_projects and flow_status list the names. Refuses a name that matches more than one project.",
     inputSchema: shapes.open_project,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -276,11 +288,11 @@ server.registerTool(
   "flow_characters",
   {
     title: "List characters",
-    description: "List the reusable characters in the open Flow project. Each can be used in a scene as 'asset:<name>'.",
+    description: "List the reusable characters in the open Flow project, with their remembered voices (pass `with_voices: true` to read each voice live from Flow, ~8 s per character). Each can be used in a scene as 'asset:<name>'.",
     inputSchema: shapes.characters,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
-  () => reply(patient("flow_characters", core.characters())),
+  (args) => reply(patient("flow_characters", core.characters(args))),
 );
 
 server.registerTool(
