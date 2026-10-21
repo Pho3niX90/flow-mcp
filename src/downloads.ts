@@ -11,6 +11,10 @@ import { join } from "node:path";
 // The user's own Downloads folder.
 export const SYSTEM_DOWNLOADS = join(homedir(), "Downloads");
 
+// The upscale this tool may pick without asking: 2K for an image, 1080p for a video. Both are free. 4K costs credits on
+// plans that offer it, so it is never chosen here; if no free upscale is on offer, the original is taken instead.
+export const FREE_UPSCALE = /\b(2K|1080p)\b/i;
+
 export interface DownloadWatch {
   // "<dir>/<name>" of everything in either folder when the watch began.
   seen: Set<string>;

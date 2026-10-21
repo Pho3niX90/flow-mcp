@@ -1,11 +1,11 @@
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import type { CDPSession, Locator, Page } from "playwright-core";
 import { HOME_DIR, getFlowPage, inEnglish } from "./chrome.js";
-import { SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
+import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
-import { extractZip, workDir } from "./platform.js";
+import { extractZip, moveFile, workDir } from "./platform.js";
 import { matchesModelLabel } from "./video-models.js";
 
 export interface FlowState {
@@ -23,20 +23,6 @@ const VIDEO_TIMEOUT_MS = 12 * 60_000;
 const FAILURE_TEXT = /failed|couldn.t|unable/i;
 
 const pause = (page: Page, ms: number) => page.waitForTimeout(ms);
-
-// Cross-drive safe move (Windows throws EXDEV when moving from C:\Users\...\Downloads to E:\...).
-function moveFile(src: string, dest: string): void {
-  try {
-    renameSync(src, dest);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EXDEV") {
-      copyFileSync(src, dest);
-      rmSync(src, { force: true });
-    } else {
-      throw err;
-    }
-  }
-}
 
 // `detailed` opens the account panel to read the balance, so it must not run while a generation is driving the page.
 export async function getFlowState(detailed = false): Promise<FlowState> {
@@ -1051,7 +1037,10 @@ async function downloadTile(page: Page, target: Locator | TileResolver, targetSt
   await useOwnDownloadDir(page);
   const resolve: TileResolver = typeof target === "function" ? target : async () => target;
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Only fetching the file is retried. Once it has arrived, a failure to place it (a full or offline drive, a bad path)
+  // must not trigger another download: that left three copies of every image in the download folder on 2026-10-21.
+  let file: string | undefined;
+  for (let attempt = 0; attempt < 3 && !file; attempt++) {
     try {
       const tile = await resolve();
       const before = downloadsNow();
@@ -1069,33 +1058,38 @@ async function downloadTile(page: Page, target: Locator | TileResolver, targetSt
         throw new Error(items.length ? `Flow's tile menu has no Download item. It offered: ${items.join(" | ")}` : "Flow's tile menu did not open.");
       }
       await download.click({ timeout: 10_000 });
-      // Size submenu: "720p Original size" / "1K Original size", or the best upscale the plan allows.
+      // Size submenu: "720p Original size" / "1K Original size", or the best free upscale the plan allows.
       const original = page.getByRole("menuitem", { name: /original/i }).first();
       if (await original.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) {
-        const upscaled = page.locator('[role="menuitem"]:not([aria-disabled="true"]):not([disabled])').filter({ hasText: /upscaled/i }).first();
+        const upscaled = page
+          .locator('[role="menuitem"]:not([aria-disabled="true"]):not([disabled])')
+          .filter({ hasText: /upscaled/i })
+          .filter({ hasText: FREE_UPSCALE })
+          .first();
         const wanted = quality === "upscaled" && (await upscaled.isVisible().catch(() => false)) ? upscaled : original;
         await wanted.click();
       }
       // Upscales are rendered on demand, so they can take minutes to appear.
-      const file = await waitForDownloadedFile(page, before, quality === "upscaled" ? 600_000 : 180_000);
-      const kind = extensionOf(file);
-      let saved: string[];
-      if (kind === ".zip") saved = unpackTakes(file, targetStem);
-      else {
-        const target = `${targetStem}${kind}`;
-        moveFile(file, target);
-        saved = [target];
-      }
+      file = await waitForDownloadedFile(page, before, quality === "upscaled" ? 600_000 : 180_000);
       await page.keyboard.press("Escape");
       await scrollToTop(page);
-      return saved;
     } catch (err) {
       lastError = err;
       await page.keyboard.press("Escape").catch(() => {});
       await pause(page, 2000);
     }
   }
-  throw lastError;
+  if (!file) throw lastError;
+  const kind = extensionOf(file);
+  try {
+    if (kind === ".zip") return unpackTakes(file, targetStem);
+    const target = `${targetStem}${kind}`;
+    moveFile(file, target);
+    return [target];
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Downloaded, but could not be saved to ${targetStem}${kind}: ${reason}. The file is safe at ${file}.`);
+  }
 }
 
 // The left-hand "Project navigation" (All media, Images, Videos, Characters...). Its Collapse button (a setting Flow
@@ -1229,6 +1223,8 @@ export async function runGeneration(job: Job): Promise<string[]> {
 
   mkdirSync(s.output_dir, { recursive: true });
   const files: string[] = [];
+  const failed: string[] = [];
+  let firstError: unknown;
   for (const [i, id] of fresh.entries()) {
     const label = fresh.length > 1 ? `${s.file_stem}-v${i + 1}` : s.file_stem;
     // Flow names clips itself and reuses those names, so two takes of one scene come back identically titled and
@@ -1243,8 +1239,19 @@ export async function runGeneration(job: Job): Promise<string[]> {
     // old title failed every such download after 30 s ("locator.waitFor: Timeout 30000ms exceeded ... aria-label=
     // <the prompt>", reported by a user, 2026-10-15) while the clip sat finished and renamed in Flow.
     const handle = renamed && id.startsWith("title:") ? `title:${newTitle}` : id;
-    files.push(...(await downloadMedia(page, handle, stem, s.download_quality)));
+    // Each variant is downloaded on its own: one that fails must not stop the others (2026-10-21, an x2 image batch
+    // kept only its first take). The failed ones stay in Flow under their new titles for flow_download.
+    try {
+      files.push(...(await downloadMedia(page, handle, stem, s.download_quality)));
+    } catch (err) {
+      firstError ??= err;
+      failed.push(`${renamed ? newTitle : label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
     await pause(page, 1500);
+  }
+  if (failed.length) {
+    if (!files.length) throw firstError;
+    job.note = [job.note, `not downloaded (still in Flow, fetch with flow_download): ${failed.join(" | ")}`].filter(Boolean).join(" · ");
   }
   return files;
 }

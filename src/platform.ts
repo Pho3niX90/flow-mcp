@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 
@@ -36,6 +36,19 @@ export function powershell(script: string, timeout = 120_000): string {
     timeout,
     windowsHide: true,
   });
+}
+
+// Moves a file, also across drives. renameSync cannot cross volumes (EXDEV): on Windows the tool's download folder is
+// on C: while the output folder is often elsewhere, such as another drive or Google Drive mount. Falls back to
+// copy-then-remove, so the source is only removed once the copy has succeeded.
+export function moveFile(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    copyFileSync(from, to);
+    rmSync(from, { force: true });
+  }
 }
 
 // Puts a file or folder in the system's own bin so it can be restored: the Mac's Trash, Windows' Recycle Bin, or the

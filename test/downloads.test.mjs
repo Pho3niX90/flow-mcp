@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { SettledFiles, isFlowDownload, newDownloads, originIsFlow, sameDownloadName, snapshotDownloads } from "../dist/downloads.js";
+import { FREE_UPSCALE, SettledFiles, isFlowDownload, newDownloads, originIsFlow, sameDownloadName, snapshotDownloads } from "../dist/downloads.js";
 
 const FROM_FLOW = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://flow.google.com/project/abc\r\nHostUrl=https://flow.google.com/media/xyz\r\n";
 const FROM_ELSEWHERE = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/\r\nHostUrl=https://example.com/report.pdf\r\n";
@@ -78,4 +78,14 @@ test("a file counts as arrived once its size holds still, with several arriving 
   const empty = new SettledFiles();
   empty.next([{ path: "e", size: 0 }]);
   assert.equal(empty.next([{ path: "e", size: 0 }]), undefined);
+});
+
+test("free upscale guard accepts 2K and 1080p and refuses paid 4K", () => {
+  assert.equal(FREE_UPSCALE.test("2K Upscaled"), true);
+  assert.equal(FREE_UPSCALE.test("1080p Upscaled"), true);
+  assert.equal(FREE_UPSCALE.test("2k upscaled"), true);
+  assert.equal(FREE_UPSCALE.test("4K Upscaled"), false);
+  assert.equal(FREE_UPSCALE.test("4K (50 credits)"), false);
+  assert.equal(FREE_UPSCALE.test("720p Original size"), false);
+  assert.equal(FREE_UPSCALE.test("1K Original size"), false);
 });
