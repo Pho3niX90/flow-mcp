@@ -8,7 +8,7 @@ import { KOKORO_DEFAULT_VOICE, KOKORO_MB, KOKORO_VOICES, kokoroReady, speakWithK
 import { extractFirstFrame, extractFrameAt, extractLastFrame } from "./chain.js";
 import { burnCaptions, captionedName, captionSetup, previewCaptions, transcribe } from "./captions.js";
 import { presenter } from "./presenter.js";
-import { characterLook, createCharacter, createProject, downloadAsset, downloadCollection, renameAsset, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration } from "./flow.js";
+import { characterLook, createCharacter, createProject, downloadAsset, downloadCollection, openProject, renameAsset, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration } from "./flow.js";
 import { JobQueue, type Job } from "./queue.js";
 import { projectDirIn } from "./paths.js";
 import { BIN, COMPUTER, moveToBin } from "./platform.js";
@@ -396,6 +396,9 @@ export const shapes = {
   new_project: {
     title: z.string().max(80).optional().describe("Name for the new project, e.g. 'Desk lamp UGC ad'. Default: Flow's own date-and-time name."),
   },
+  open_project: {
+    project: z.string().min(1).describe("Project name as Flow shows it, or its uuid/URL. flow_status lists the names when no project is open."),
+  },
   character: {
     name: z.string().min(1).max(60).describe("Character name; scenes then reference it as 'asset:<name>' in reference_images."),
     describe: z
@@ -451,6 +454,7 @@ export interface Core {
   voices(): Promise<unknown>;
   narrate(a: Args<"narrate">): Promise<unknown>;
   new_project(a: Args<"new_project">): Promise<unknown>;
+  open_project(a: Args<"open_project">): Promise<unknown>;
   character(a: Args<"character">): Promise<unknown>;
   characters(): Promise<unknown>;
   character_edit(a: Args<"character_edit">): Promise<unknown>;
@@ -788,6 +792,11 @@ export class LocalCore implements Core {
     if (this.queue.busy) throw new Error(BUSY);
     const made = await createProject(title);
     return { ...made, note: "The Flow window now has this empty project open; every generation goes into it. Characters belong to a project, so make them again here." };
+  }
+
+  async open_project({ project }: Args<"open_project">) {
+    if (this.queue.busy) throw new Error(BUSY);
+    return openProject(project);
   }
 
   async character(a: Args<"character">) {

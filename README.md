@@ -213,6 +213,7 @@ agree on what is running. That API listens on 127.0.0.1 only and needs a per-run
 | Tool | Purpose |
 |---|---|
 | `flow_status` | Session state (signed in, project open, plan, credits left), queue, pacing, prompt playbook |
+| `flow_open_project` | Open one of your existing Flow projects by name, UUID or URL; `flow_status` lists names when no project is open |
 | `flow_generate` | Queue scenes: prompt, image or video, model, aspect, duration, resolution, variants, first/last frame, reference images, `max_credits` cap |
 | `flow_wait` | Wait for jobs, or for the task id of a slow call; returns file paths and results. Answers within about 40 s, so call again until `finished` is true |
 | `flow_cancel` | Cancel a job that has not started |
