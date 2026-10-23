@@ -153,7 +153,9 @@ export async function getFlowPage(account: Account = currentAccount()): Promise<
   const b = await getBrowser(account);
   const context = b.contexts()[0];
   if (!context) throw new Error(`Chrome for account "${account.name}" has no browser context; restart that Flow Chrome window.`);
-  const flowPages = context.pages().filter((p) => FLOW_HOSTS.test(p.url()));
+  const wantedProject = process.env.FLOW_MCP_PROJECT ?? "";
+  // FLOW_MCP_PROJECT (a project id) is a test hook: drive only that project's tab, never the one the real server uses.
+  const flowPages = context.pages().filter((p) => FLOW_HOSTS.test(p.url()) && (!wantedProject || p.url().includes(wantedProject)));
   // A login launch can leave the Flow marketing page open beside the signed-in
   // dashboard or a project. Prefer the project, then the dashboard, so status
   // checks do not mistake `/about` for a signed-out session.

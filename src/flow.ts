@@ -1601,19 +1601,14 @@ async function ensureProjectGrid(page: Page): Promise<void> {
   await scrollToTop(page);
 }
 
-// Drives one generation in the Flow tab and returns the downloaded file paths.
-export async function runGeneration(job: Job): Promise<string[]> {
+// The project grid with the plain composer, empty and with Agent off: where every generation starts.
+async function readyComposer(): Promise<Page> {
   const state = await getFlowState();
   if (!state.signedIn || !state.inProject) throw new Error(state.hint);
   const page = await getFlowPage();
-  const s = job.params;
-
   await ensureProjectGrid(page);
   // Flow can be sitting on its agent session panel - left by an agent batch, or by the user's own agent session, and
-  // it survives a reload. That panel replaces the composer, so the Agent chip is not on the page at all, and reading
-  // aria-pressed on it used to sit out Playwright's 30 s default and fail the job before anything was even quoted
-  // (seen live on Linux, 2026-11-04, on a free still). Close it first, then ask the chip with a short timeout:
-  // "no chip" means "not in agent mode", which is exactly what this job wants.
+  // it survives a reload. Close it and any docked side panel first, then switch Agent off if it is on.
   await closeAgentSession(page);
   await closeAgentSidePanel(page);
   // Issue #43: some Flow UI variants omit the Agent toggle completely while keeping "Settings trigger" visible.
@@ -1621,7 +1616,30 @@ export async function runGeneration(job: Job): Promise<string[]> {
   const agentState = await agentIsOn(page);
   if (agentState === true) await setAgentMode(page, false);
   const clear = page.getByRole("button", { name: "Clear prompt" });
-  if (await clear.isVisible().catch(() => false)) await clear.click();
+  if (await clear.isVisible().catch(() => false)) await clear.click({ timeout: 3000 }).catch(() => {});
+  return page;
+}
+
+// Uploads (or finds) each reference and attaches it to the composer. `uploaded` lets a batch upload a file once and
+// reuse the asset for every scene that names the same file.
+async function attachReferences(page: Page, job: Job, uploaded?: Map<string, string>): Promise<void> {
+  const s = job.params;
+  for (const [i, ref] of (s.reference_images ?? []).entries()) {
+    const name = uploaded?.get(ref) ?? (await uploadAsset(page, job, ref, `ref${i + 1}`));
+    uploaded?.set(ref, name);
+    await attachAsset(page, page.getByRole("button", { name: "Add ingredients to the prompt box" }), name);
+  }
+  const wanted = (s.reference_images ?? []).length;
+  if (wanted) {
+    const attached = await page.getByRole("button", { name: "Ingredient" }).count();
+    if (attached < wanted) throw new Error(`Only ${attached} of ${wanted} reference image(s) attached in Flow; nothing was generated.`);
+  }
+}
+
+// Drives one generation in the Flow tab and returns the downloaded file paths.
+export async function runGeneration(job: Job): Promise<string[]> {
+  const page = await readyComposer();
+  const s = job.params;
 
   job.credits = await applySettings(page, job);
   if (job.credits > s.max_credits) {
@@ -1645,15 +1663,7 @@ export async function runGeneration(job: Job): Promise<string[]> {
       .join(" · ");
     s.reference_images = [];
   }
-  for (const [i, ref] of (s.reference_images ?? []).entries()) {
-    const name = await uploadAsset(page, job, ref, `ref${i + 1}`);
-    await attachAsset(page, page.getByRole("button", { name: "Add ingredients to the prompt box" }), name);
-  }
-  const wanted = (s.reference_images ?? []).length;
-  if (wanted) {
-    const attached = await page.getByRole("button", { name: "Ingredient" }).count();
-    if (attached < wanted) throw new Error(`Only ${attached} of ${wanted} reference image(s) attached in Flow; nothing was generated.`);
-  }
+  await attachReferences(page, job);
 
   await typePrompt(page, s.prompt);
   const start = page.getByRole("button", { name: "Start generation" });
@@ -1701,6 +1711,219 @@ export async function runGeneration(job: Job): Promise<string[]> {
     job.note = [job.note, `not downloaded (still in Flow, fetch with flow_download): ${failed.join(" | ")}`].filter(Boolean).join(" · ");
   }
   return files;
+}
+
+// Between two "Start generation" clicks in a batch: at least a random 10-20 s, counted from the last click, so the
+// upload and typing of the next scene count towards it. Never a burst of sends.
+const sendGap = () => 10_000 + Math.random() * 10_000;
+
+// What an image was made from: the prompt as Flow stores it plus the media ids of the attached references. Mapped
+// 2026-10-23: a reference chip's picture is flow-content.google/image/<media id>, and "Reuse prompt" on a finished tile
+// puts the exact prompt AND its reference chips back in the composer. So a finished tile can be tied to the scene it
+// was sent for in any finish order, even when two scenes share a prompt and differ only in their references.
+async function composerKey(page: Page): Promise<string> {
+  return page.evaluate(
+    (uuidSource) => {
+      const uuidRe = new RegExp(uuidSource);
+      const text = (document.querySelector(".ProseMirror") as HTMLElement | null)?.innerText ?? "";
+      const refs = [...document.querySelectorAll("flow-base-prompt-box img")].map((i) => i.getAttribute("src")?.match(uuidRe)?.[0] ?? "");
+      return [text.replace(/\s+/g, " ").trim().toLowerCase(), ...refs.sort()].join(" ").trim();
+    },
+    MEDIA_UUID_RE.source,
+  );
+}
+
+// Per scene, the indexes of its tiles. Batch prompts are typed word for word (no agent rewording), so a tile's key
+// equals its scene's; whatever is left over (a reference whose picture carried no id, say) falls back to the prompt's
+// words alone.
+export function matchSent(scenes: string[], tiles: string[], takes: number[]): number[][] {
+  const out: number[][] = scenes.map(() => []);
+  const used = new Set<number>();
+  scenes.forEach((key, s) =>
+    tiles.forEach((tile, t) => {
+      if (tile !== key || used.has(t) || out[s].length >= takes[s]) return;
+      out[s].push(t);
+      used.add(t);
+    }),
+  );
+  const leftScenes = scenes.map((_, s) => s).filter((s) => !out[s].length);
+  const leftTiles = tiles.map((_, t) => t).filter((t) => !used.has(t) && tiles[t]);
+  const promptOnly = (key: string) => key.replace(new RegExp(MEDIA_UUID_RE.source, "g"), "");
+  matchScenes(
+    leftScenes.map((s) => promptOnly(scenes[s])),
+    leftTiles.map((t) => promptOnly(tiles[t])),
+  ).forEach((picked, n) => out[leftScenes[n]].push(...picked.slice(0, takes[leftScenes[n]]).map((k) => leftTiles[k])));
+  return out;
+}
+
+// Brings a tile into the mounted part of the virtual grid if it has scrolled out.
+async function mountTile(page: Page, id: string): Promise<Locator> {
+  if (!(await mediaTile(page, id).count())) await scanGrid(page, (seen) => seen.some((x) => x.id === id));
+  return mediaTile(page, id);
+}
+
+// Image scenes sent the way a person does it by hand (2026-10-23): type the prompt, attach the references, press Start
+// generation and go straight on to the next scene while Flow renders, then collect everything. Checked live: Flow
+// empties the composer (prompt and chips) the moment it takes a generation, keeps the settings, shows a pending tile
+// titled with the prompt at once, and renders a second prompt alongside the first. Images only (0 credits); video
+// stays one at a time. One result per job, in order: its files, or the reason it has none.
+export async function runImageBatch(jobs: Job[]): Promise<(string[] | Error)[]> {
+  const page = await readyComposer();
+  const results: (string[] | Error)[] = jobs.map(() => new Error("Not sent to Flow."));
+  const keys: string[] = [];
+  const sent: number[] = [];
+  const uploaded = new Map<string, string>();
+  await scrollToTop(page);
+  const before = await mediaIds(page);
+  let settings = "";
+  let quote = 0;
+  let lastSent = 0;
+  for (const [i, job] of jobs.entries()) {
+    const s = job.params;
+    try {
+      if (s.type !== "image") throw new Error("Only image scenes can be sent together.");
+      step(job, "preparing the prompt");
+      // Flow keeps the settings from one generation to the next, so the popover is only opened when they change.
+      // Credit safety: the quote is re-read whenever aspect, effective image model, or variants change, and checked
+      // against every scene's own max_credits before anything is sent.
+      const wanted = JSON.stringify([s.aspect_ratio, imageModelFor(s.model), s.variants ?? 1]);
+      if (wanted !== settings) {
+        quote = await applySettings(page, job);
+        settings = wanted;
+      }
+      job.credits = quote;
+      if (quote > s.max_credits) {
+        throw new Error(`Flow quotes ${quote} credits for this scene, above max_credits=${s.max_credits}. Nothing was generated.`);
+      }
+      await attachReferences(page, job, uploaded);
+      await typePrompt(page, s.prompt);
+      const start = page.getByRole("button", { name: "Start generation" });
+      if (!(await start.isEnabled())) throw new Error("Flow's Start generation button is disabled; the prompt or inputs were not accepted.");
+      keys[i] = await composerKey(page);
+      const wait = lastSent + sendGap() - Date.now();
+      if (lastSent && wait > 0) {
+        step(job, `sending in ${Math.ceil(wait / 1000)}s`);
+        await pause(page, wait);
+      }
+      await scrollToTop(page);
+      await start.click();
+      lastSent = Date.now();
+      const taken = await page
+        .waitForFunction(() => !document.querySelector(".ProseMirror")?.textContent?.trim(), null, { timeout: 10_000 })
+        .then(() => true, () => false);
+      if (!taken) throw new Error("Flow did not take this prompt: it was still in the composer 10 s after Start generation.");
+      sent.push(i);
+      step(job, "sent, Flow is rendering");
+    } catch (err) {
+      results[i] = err instanceof Error ? err : new Error(String(err));
+      await dismissOverlays(page).catch(() => {});
+      await page.getByRole("button", { name: "Clear prompt" }).click({ timeout: 3000 }).catch(() => {});
+    }
+  }
+  if (!sent.length) return results;
+
+  // Wait until every image is in, walking only tiles above the snapshot (walkNewTiles) and pressing Flow's free Retry
+  // on new failed tiles once per scene sent.
+  const emptyGrid = before.length === 0;
+  const expected = sent.reduce((n, i) => n + (jobs[i].params.variants ?? 1), 0);
+  let retriesLeft = sent.reduce((n, i) => n + (jobs[i].params.retries ?? 1), 0);
+  const deadline = Date.now() + IMAGE_TIMEOUT_MS + sent.length * 30_000;
+  let fresh: string[] = [];
+  let idle = 0;
+  while (Date.now() < deadline) {
+    await pause(page, 3000);
+    await scrollToTop(page);
+    const walk = await walkNewTiles(page, before);
+    const trustworthy = walk.sawKnown || emptyGrid;
+    fresh = trustworthy ? ownTiles(walk, "image") : [];
+    const rendering = walk.pending.length;
+    for (const i of sent) step(jobs[i], `${fresh.length} of ${expected} image(s) ready${rendering ? `, ${rendering} rendering` : ""}`);
+    // Done only when nothing is rendering either: a stray finished tile must not end the wait while one of ours renders.
+    if (rendering) {
+      idle = 0;
+      continue;
+    }
+    if (walk.errors) {
+      if (BLOCKED_TEXT.test((await page.locator("flow-error-tile").first().innerText({ timeout: 3000 }).catch(() => "")) ?? "")) {
+        for (const i of sent) results[i] = new Error(BLOCKED_ERROR);
+        return results;
+      }
+      if (retriesLeft > 0) {
+        const { retried } = await retryNewErrorTiles(page, before);
+        retriesLeft -= Math.max(1, retried);
+        if (retried) {
+          idle = 0;
+          continue;
+        }
+      }
+    }
+    if (trustworthy && fresh.length >= expected) break;
+    if (++idle >= 2) break; // nothing rendering on two polls running: whatever is missing has failed
+  }
+
+  // Tie each finished tile to its scene by what Flow stored for it, whatever order they finished in.
+  const tileKeys: string[] = [];
+  for (const [k, id] of fresh.entries()) {
+    for (const i of sent) step(jobs[i], `matching image ${k + 1} of ${fresh.length} to its scene`);
+    let key = "";
+    for (let attempt = 0; attempt < 2 && !key; attempt++) {
+      try {
+        const tile = await mountTile(page, id);
+        await hoverTile(page, tile, 250);
+        await tile.getByRole("button", { name: "Reuse prompt" }).click({ timeout: 5000 });
+        await pause(page, 900);
+        key = await composerKey(page);
+      } catch {
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await page.getByRole("button", { name: "Clear prompt" }).click({ timeout: 3000 }).catch(() => {});
+      await pause(page, 300);
+    }
+    tileKeys.push(key);
+  }
+  if (process.env.FLOW_MCP_DEBUG) console.error("[flow-mcp batch] sent:", sent.map((i) => keys[i]), "read back:", tileKeys);
+  const assigned = matchSent(
+    sent.map((i) => keys[i]),
+    tileKeys,
+    sent.map((i) => jobs[i].params.variants ?? 1),
+  );
+
+  const unmatched = fresh.length - assigned.flat().length;
+  for (const [n, i] of sent.entries()) {
+    const job = jobs[i];
+    const s = job.params;
+    const ids = assigned[n].map((t) => fresh[t]);
+    if (!ids.length) {
+      results[i] = new Error(
+        unmatched
+          ? `Flow made ${unmatched} image(s) in this batch that could not be tied to a scene, and this scene got none. Look in flow_assets before making it again.`
+          : "Flow did not deliver this image (it failed in Flow or never appeared). Images cost nothing: flow_retry makes it again.",
+      );
+      continue;
+    }
+    try {
+      const files: string[] = [];
+      mkdirSync(s.output_dir, { recursive: true });
+      for (const [v, id] of ids.entries()) {
+        const started = Date.now();
+        const label = ids.length > 1 ? `${s.file_stem}-v${v + 1}` : s.file_stem;
+        const title = `${basename(s.output_dir)}-${label}`;
+        step(job, `downloading ${label}`);
+        // Uses current renameTile (item-page route + OUR_TITLE guard). OUR_TITLE refusal propagates so an unrelated
+        // asset is never downloaded under this scene; a mere missing Rename returns false and download proceeds.
+        const renamed = await renameTile(page, await mountTile(page, id), title);
+        if (renamed) job.note = [job.note, `renamed in Flow to ${title}`].filter(Boolean).join(" · ");
+        files.push(...(await downloadTile(page, await mountTile(page, id), join(s.output_dir, label), s.download_quality ?? "original")));
+        await pause(page, Math.max(0, downloadPace() - (Date.now() - started)));
+      }
+      job.note = [`sent together with ${sent.length - 1} other image(s)`, job.note].filter(Boolean).join(" · ");
+      results[i] = files;
+    } catch (err) {
+      results[i] = new Error(`${err instanceof Error ? err.message : err} The image is in Flow: flow_download fetches it for free.`);
+    }
+    step(job, undefined);
+  }
+  return results;
 }
 
 export interface FlowAsset {

@@ -101,7 +101,7 @@ server.registerTool(
   {
     title: "Queue Flow generations",
     description:
-      "Queue one clip or image per scene in the open Flow project. Runs one at a time per account with human-like pauses (with several accounts in flow_accounts, scenes are shared out and generate at the same time) and spends the user's Google AI credits (per video, at 720p: Omni 1.2 Flash 3 a second up to 10 s and 6 a second after, so 30 for 10 s and 60 for 15 s; at 360p a third of that; Veo 3.1 Lite 10; images 0). Each scene is checked against max_credits using Flow's own quote before anything is spent. Returns job ids immediately; use flow_wait for results.",
+      "Queue one clip or image per scene in the open Flow project. Runs one at a time per account with human-like pauses (image scenes with parallel_images: sent one after another without waiting, then collected; with several accounts in flow_accounts, scenes are shared out and generate at the same time) and spends the user's Google AI credits (per video, at 720p: Omni 1.2 Flash 3 a second up to 10 s and 6 a second after, so 30 for 10 s and 60 for 15 s; at 360p a third of that; Veo 3.1 Lite 10; images 0). Each scene is checked against max_credits using Flow's own quote before anything is spent. Returns job ids immediately; use flow_wait for results.",
     inputSchema: shapes.generate,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },

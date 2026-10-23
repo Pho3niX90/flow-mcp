@@ -8,7 +8,7 @@ import { KOKORO_DEFAULT_VOICE, KOKORO_MB, KOKORO_VOICES, kokoroReady, speakWithK
 import { extractFirstFrame, extractFrameAt, extractLastFrame } from "./chain.js";
 import { burnCaptions, captionedName, captionSetup, previewCaptions, transcribe } from "./captions.js";
 import { presenter } from "./presenter.js";
-import { characterLook, characterVoice, characterVoices, createCharacter, createProject, downloadAsset, downloadCollection, imageModelFor, LATEST_IMAGE_MODEL, listImageModels, listProjectsSummary, openProject, refOf, renameAsset, setCharacterVoice, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration } from "./flow.js";
+import { characterLook, characterVoice, characterVoices, createCharacter, createProject, downloadAsset, downloadCollection, imageModelFor, LATEST_IMAGE_MODEL, listImageModels, listProjectsSummary, openProject, refOf, renameAsset, setCharacterVoice, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration, runImageBatch } from "./flow.js";
 import { accountByName, addAccount, defaultAccount, defaultImageModel, enabledAccounts, listAccounts, loadSettings, onAccount, profileDir, saveSettings, setAccountEnabled } from "./accounts.js";
 import { getFlowPage } from "./chrome.js";
 import { differenceMatte } from "./matte.js";
@@ -135,6 +135,12 @@ export const shapes = {
   generate: {
     project: z.string().min(1).describe("Folder name for the downloaded clips, e.g. 'HotelPromo'."),
     scenes: z.array(sceneSchema).min(1).max(100),
+    parallel_images: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Image scenes only, reference images included: send each scene as soon as the one before it is in, without waiting for it to finish, the way a person does it by hand (10-20 s between sends, up to 6 at a time), then match every image back to its scene. Much faster for several stills. Video scenes and reference_previous scenes still run one at a time.",
+      ),
     account: accountField,
   },
   wait: {
@@ -622,6 +628,7 @@ export class LocalCore implements Core {
         const state = await getFlowState();
         return state.signedIn && state.inProject ? undefined : state.hint;
       }),
+    batchRunner: (jobs, account) => onAccount(account, () => runImageBatch(jobs)),
   });
 
   private async run(job: Job): Promise<string[]> {
@@ -704,7 +711,7 @@ export class LocalCore implements Core {
     };
   }
 
-  async generate({ project, scenes, account }: Args<"generate">) {
+  async generate({ project, scenes, parallel_images, account }: Args<"generate">) {
     const invalid = scenes.findIndex((s, i) => s.chain_previous && (i === 0 || s.first_frame || s.type === "image"));
     if (invalid >= 0) {
       throw new Error(`Scene ${invalid + 1}: chain_previous needs a preceding video scene in the same call and cannot be combined with first_frame.`);
@@ -754,6 +761,8 @@ export class LocalCore implements Core {
             prompt: `${textFirst}${scene.prompt.trim().replace(/\.?$/, ".")}${phrase ? ` ${phrase}` : ""}${lock}${inherit}${textLast}`,
             chain_from: chain_previous ? jobs[i - 1].id : undefined,
             reference_from: reference_previous ? jobs[i - 1].id : undefined,
+            // A reference_previous scene needs the previous image finished, so it waits its turn like a video.
+            parallel: parallel_images && scene.type === "image" && !reference_previous ? true : undefined,
             account: this.pin(account, [scene.first_frame, scene.last_frame, ...(scene.reference_images ?? [])].some((r) => r?.startsWith("asset:"))),
             output_dir,
             file_stem: `scene-${String(offset + i + 1).padStart(2, "0")}`,

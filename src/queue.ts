@@ -36,6 +36,8 @@ export interface SceneParams {
   attach?: string[];
   continue_mode?: "exact" | "likeness";
   retries?: number;
+  // Image scene sent with the queued ones after it without waiting for each to finish (flow_generate parallel_images).
+  parallel?: boolean;
   download_quality?: "original" | "upscaled";
   output_dir: string;
   file_stem: string;
@@ -62,12 +64,16 @@ export interface Job {
 }
 
 export type JobRunner = (job: Job, account: string) => Promise<string[]>;
+// Sends several image scenes one after another without waiting for each, then collects them; one result per job.
+export type BatchRunner = (jobs: Job[], account: string) => Promise<(string[] | Error)[]>;
 
 export interface QueueHooks {
   // The accounts that may take work, in order of preference.
   accounts: () => string[];
   // undefined when the account can generate now, otherwise what the user must do first (sign in, open a project).
   ready: (account: string) => Promise<string | undefined>;
+  // Optional batch runner for queued parallel image scenes on one account.
+  batchRunner?: BatchRunner;
   // Optional overrides for pacing in unit tests.
   pauseMinMs?: number;
   pauseMaxMs?: number;
@@ -75,8 +81,12 @@ export interface QueueHooks {
 
 // Flow is driven like a careful person would: one generation at a time PER ACCOUNT, with a randomised pause between
 // them. Several accounts are several people, each at their own Chrome, all working at once from one shared line.
+// Image scenes marked parallel go out together inside one account's worker (the pause between sends lives in the driver),
+// and the pause below comes before the next batch.
 const PAUSE_MIN_MS = Number(process.env.FLOW_MCP_PAUSE_MIN_S ?? 25) * 1000;
 const PAUSE_MAX_MS = Number(process.env.FLOW_MCP_PAUSE_MAX_S ?? 70) * 1000;
+// A batch counts on its new tiles staying in the part of the grid Flow keeps mounted at the top (30+ tiles seen).
+const BATCH_MAX = 6;
 // An account found not ready (signed out, no project open) is left alone this long before it is checked again.
 const RECHECK_MS = 60_000;
 
@@ -111,7 +121,9 @@ export class JobQueue {
       createdAt: new Date().toISOString(),
     };
     this.jobs.set(job.id, job);
-    this.kick();
+    // Started on the next turn of the event loop, once the caller has queued the rest of its scenes: started at once,
+    // the first scene ran alone and a parallel batch never formed (2026-10-23).
+    setImmediate(() => this.kick());
     return job;
   }
 
@@ -210,16 +222,32 @@ export class JobQueue {
     }
   }
 
-  // The next job this worker may take: one pinned to it, or an unpinned one. An account that is not ready leaves
-  // unpinned work to the others - unless none is ready, when the first account takes it and fails it with the reason.
-  private next(w: Worker): Job | undefined {
+  // The next run of jobs this worker may take: up to BATCH_MAX consecutive eligible parallel image jobs, or one single
+  // job otherwise. An account that is not ready leaves unpinned work to the others - unless none is ready, when the
+  // first account takes it and fails it with the reason.
+  private nextBatch(w: Worker): Job[] {
     const accounts = this.hooks.accounts();
     const anyReady = accounts.some((a) => !this.workers.get(a)?.notReady);
     const takesUnpinned = !w.notReady || (!anyReady && accounts[0] === w.account);
-    return this.list().find((j) => {
+    const eligible = this.list().filter((j) => {
       if (j.status !== "queued" || this.claimed.has(j.id) || this.waitingOn(j) !== "ready") return false;
       return j.params.account ? same(j.params.account, w.account) : takesUnpinned;
     });
+    if (!eligible.length) return [];
+    if (!this.hooks.batchRunner || !eligible[0].params.parallel) return [eligible[0]];
+    const end = eligible.findIndex((j) => !j.params.parallel);
+    return eligible.slice(0, end < 0 ? BATCH_MAX : Math.min(end, BATCH_MAX));
+  }
+
+  private handleUnusualActivity(w: Worker, error: string): void {
+    const singleAccount = this.hooks.accounts().length <= 1;
+    w.notReady = { hint: error, at: Date.now() };
+    for (const other of this.list().filter((j) => j.status === "queued")) {
+      if (!singleAccount && (!other.params.account || !same(other.params.account, w.account))) continue;
+      other.status = "failed";
+      other.error = 'Stopped because Flow reported "unusual activity" on the job before this. Resolve it in the Flow window, then use flow_retry.';
+      other.finishedAt = new Date().toISOString();
+    }
   }
 
   private async work(w: Worker): Promise<void> {
@@ -240,9 +268,10 @@ export class JobQueue {
             this.kick(); // the other accounts take over what this one cannot do
           }
         }
-        const job = this.next(w);
-        if (!job) return;
-        this.claimed.add(job.id);
+        const batch = this.nextBatch(w);
+        if (!batch.length) return;
+        for (const j of batch) this.claimed.add(j.id);
+        let live: Job[];
         try {
           if (w.lastFinished) {
             const pause = minMs + Math.random() * Math.max(0, maxMs - minMs);
@@ -253,13 +282,39 @@ export class JobQueue {
               w.pausedReason = null;
             }
           }
-          if (job.status !== "queued") continue; // cancelled during the pause
-          job.status = "running";
-          job.account = w.account;
-          job.attempts++;
+          live = batch.filter((j) => j.status === "queued");
+          if (!live.length) continue; // cancelled during the pause
+          for (const j of live) {
+            j.status = "running";
+            j.account = w.account;
+            j.attempts++;
+          }
         } finally {
-          this.claimed.delete(job.id);
+          for (const j of batch) this.claimed.delete(j.id);
         }
+        if (live.length > 1 && this.hooks.batchRunner) {
+          // A whole-batch failure may come after some images were sent: those are in Flow (free), not lost.
+          const results = await this.hooks.batchRunner(live, w.account).catch((err: unknown) => live.map(() => (err instanceof Error ? err : new Error(String(err)))));
+          let blockedError: string | undefined;
+          for (const [i, j] of live.entries()) {
+            const r = results[i];
+            if (r instanceof Error) {
+              j.error = r.message;
+              j.status = "failed";
+              if (j.error.includes("unusual activity")) blockedError ??= j.error;
+            } else {
+              j.files = r;
+              j.error = undefined;
+              j.status = "done";
+            }
+            j.finishedAt = new Date().toISOString();
+          }
+          if (blockedError) this.handleUnusualActivity(w, blockedError);
+          w.lastFinished = Date.now();
+          this.kick();
+          continue;
+        }
+        const job = live[0];
         try {
           job.files = await this.runner(job, w.account);
           job.status = "done";
@@ -271,16 +326,7 @@ export class JobQueue {
           const retryable = /agent finished without creating/i.test(job.error);
           job.status = retryable && job.attempts <= (job.params.retries ?? 1) ? "queued" : "failed";
           // Flow suspects automation: do not walk through the rest of the queue into the same refusal.
-          if (job.error.includes("unusual activity")) {
-            const singleAccount = this.hooks.accounts().length <= 1;
-            w.notReady = { hint: job.error, at: Date.now() };
-            for (const other of this.list().filter((j) => j.status === "queued")) {
-              if (!singleAccount && (!other.params.account || !same(other.params.account, w.account))) continue;
-              other.status = "failed";
-              other.error = 'Stopped because Flow reported "unusual activity" on the job before this. Resolve it in the Flow window, then use flow_retry.';
-              other.finishedAt = new Date().toISOString();
-            }
-          }
+          if (job.error.includes("unusual activity")) this.handleUnusualActivity(w, job.error);
         }
         job.finishedAt = new Date().toISOString();
         w.lastFinished = Date.now();
