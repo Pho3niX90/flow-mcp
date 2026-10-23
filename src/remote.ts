@@ -33,6 +33,7 @@ export class RemoteCore implements Core {
   characters = (a: unknown) => call("characters", a ?? {});
   character_edit = (a: unknown) => call("character_edit", a);
   edit = (a: unknown) => call("edit", a);
+  cutout = (a: unknown) => call("cutout", a);
   trash = (a: unknown) => call("trash", a);
   rename = (a: unknown) => call("rename", a);
   discard = (a: unknown) => call("discard", a);
