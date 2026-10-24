@@ -1,10 +1,12 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { currentAccount, downloadDir, HOME_DIR, profileDir, type Account } from "./accounts.js";
 import { CHROME_HINT } from "./platform.js";
 
+export { HOME_DIR };
 export const FLOW_URL = "https://flow.google.com/";
 // Flow's buttons are found by their English names ("Start generation", "Download"...), so Flow has to show in English
 // whatever language the Google account uses. `hl=en` on the address does that: `hl=es` turned every label Spanish on
@@ -16,12 +18,11 @@ export const inEnglish = (url: string): string => {
   return u.toString();
 };
 const FLOW_HOSTS = /^https:\/\/(flow\.google\.com|labs\.google\/fx)/;
-export const HOME_DIR = process.env.FLOW_MCP_HOME ?? join(homedir(), ".flow-mcp");
 export const PROFILE_DIR = join(HOME_DIR, "chrome-profile");
 // Where finished stills, clips and narrations go. FLOW_MCP_OUTPUT may point at another drive (e.g. D:\flow-mcp-out).
 export const OUTPUT_ROOT = process.env.FLOW_MCP_OUTPUT ?? join(homedir(), "flow-mcp-out");
 export const CDP_PORT = Number(process.env.FLOW_MCP_CDP_PORT ?? 9333);
-const CDP_URL = `http://127.0.0.1:${CDP_PORT}`;
+const cdpUrl = (a: Account) => `http://127.0.0.1:${a.port}`;
 
 const CHROME_PATHS = [
   process.env.FLOW_MCP_CHROME,
@@ -42,12 +43,47 @@ const CHROME_PATHS = [
   process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe` : undefined,
 ].filter((p): p is string => Boolean(p));
 
-let browser: Browser | null = null;
+// One connection per account: each account is its own Chrome, reached on its own debugging port.
+const browsers = new Map<string, Browser>();
+// Connecting is shared per account, so two calls arriving together never launch the same Chrome twice.
+const connecting = new Map<string, Promise<Browser>>();
 
-async function cdpUp(): Promise<boolean> {
+async function cdpUp(a: Account): Promise<boolean> {
   try {
-    const res = await fetch(`${CDP_URL}/json/version`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(`${cdpUrl(a)}/json/version`, { signal: AbortSignal.timeout(1500) });
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Points Chrome's profile fallback download directory at the account's own download folder instead of ~/Downloads.
+// Only called while Chrome for this profile is NOT running. Merges valid JSON in place and leaves an unreadable
+// Preferences file untouched so an existing profile can never be corrupted.
+export function seedDownloadPreferences(profile: string, dlDir: string): boolean {
+  const defaultDir = join(profile, "Default");
+  const prefsFile = join(defaultDir, "Preferences");
+  mkdirSync(dlDir, { recursive: true });
+  let prefs: Record<string, unknown> = {};
+  if (existsSync(prefsFile)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(prefsFile, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      prefs = parsed as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+  } else {
+    mkdirSync(defaultDir, { recursive: true });
+  }
+  const existingDownload =
+    prefs.download && typeof prefs.download === "object" && !Array.isArray(prefs.download)
+      ? (prefs.download as Record<string, unknown>)
+      : {};
+  prefs.download = { ...existingDownload, default_directory: dlDir, prompt_for_download: false };
+  try {
+    writeFileSync(prefsFile, JSON.stringify(prefs));
+    return true;
   } catch {
     return false;
   }
@@ -61,12 +97,14 @@ export function chromeExecutable(): string {
   return chromePath;
 }
 
-async function launchChrome(): Promise<void> {
+async function launchChrome(a: Account): Promise<void> {
   const chromePath = chromeExecutable();
-  mkdirSync(PROFILE_DIR, { recursive: true });
+  const profile = profileDir(a);
+  mkdirSync(profile, { recursive: true });
+  seedDownloadPreferences(profile, downloadDir(a));
   const args = [
-    `--user-data-dir=${PROFILE_DIR}`,
-    `--remote-debugging-port=${CDP_PORT}`,
+    `--user-data-dir=${profile}`,
+    `--remote-debugging-port=${a.port}`,
     "--no-first-run",
     "--no-default-browser-check",
     inEnglish(FLOW_URL),
@@ -79,7 +117,7 @@ async function launchChrome(): Promise<void> {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `Start-Process -FilePath '${chromePath.replace(/'/g, "''")}' -ArgumentList ${args.map((a) => `'${a.replace(/'/g, "''")}'`).join(",")} -WindowStyle Normal`,
+        `Start-Process -FilePath '${chromePath.replace(/'/g, "''")}' -ArgumentList ${args.map((arg) => `'${arg.replace(/'/g, "''")}'`).join(",")} -WindowStyle Normal`,
       ],
       { stdio: "ignore", windowsHide: true },
     );
@@ -88,23 +126,33 @@ async function launchChrome(): Promise<void> {
     child.unref();
   }
   for (let i = 0; i < 40; i++) {
-    if (await cdpUp()) return;
+    if (await cdpUp(a)) return;
     await new Promise((r) => setTimeout(r, 500));
   }
-  throw new Error(`Chrome started but CDP port ${CDP_PORT} never came up.`);
+  throw new Error(`Chrome for account "${a.name}" started but CDP port ${a.port} never came up.`);
 }
 
-export async function getBrowser(): Promise<Browser> {
-  if (browser?.isConnected()) return browser;
-  if (!(await cdpUp())) await launchChrome();
-  browser = await chromium.connectOverCDP(CDP_URL);
-  return browser;
+export async function getBrowser(account: Account = currentAccount()): Promise<Browser> {
+  const key = account.name.toLowerCase();
+  const open = browsers.get(key);
+  if (open?.isConnected()) return open;
+  let pending = connecting.get(key);
+  if (!pending) {
+    pending = (async () => {
+      if (!(await cdpUp(account))) await launchChrome(account);
+      const b = await chromium.connectOverCDP(cdpUrl(account));
+      browsers.set(key, b);
+      return b;
+    })().finally(() => connecting.delete(key));
+    connecting.set(key, pending);
+  }
+  return pending;
 }
 
-export async function getFlowPage(): Promise<Page> {
-  const b = await getBrowser();
+export async function getFlowPage(account: Account = currentAccount()): Promise<Page> {
+  const b = await getBrowser(account);
   const context = b.contexts()[0];
-  if (!context) throw new Error("Chrome has no browser context; restart the Flow Chrome window.");
+  if (!context) throw new Error(`Chrome for account "${account.name}" has no browser context; restart that Flow Chrome window.`);
   const flowPages = context.pages().filter((p) => FLOW_HOSTS.test(p.url()));
   // A login launch can leave the Flow marketing page open beside the signed-in
   // dashboard or a project. Prefer the project, then the dashboard, so status

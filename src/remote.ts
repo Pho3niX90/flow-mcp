@@ -26,11 +26,13 @@ export class RemoteCore implements Core {
   // Run here, not in the owner: they never touch Chrome, and the owner may be running older code.
   voices = voicesHere;
   narrate = narrateHere;
-  projects = () => call("projects", {});
+  projects = (a: unknown) => call("projects", a ?? {});
   new_project = (a: unknown) => call("new_project", a);
   open_project = (a: unknown) => call("open_project", a);
   character = (a: unknown) => call("character", a);
   characters = (a: unknown) => call("characters", a ?? {});
+  accounts = (a: unknown) => call("accounts", a ?? {});
+  image_models = (a: unknown) => call("image_models", a ?? {});
   character_edit = (a: unknown) => call("character_edit", a);
   edit = (a: unknown) => call("edit", a);
   cutout = (a: unknown) => call("cutout", a);

@@ -101,7 +101,7 @@ server.registerTool(
   {
     title: "Queue Flow generations",
     description:
-      "Queue one clip or image per scene in the open Flow project. Runs one at a time with human-like pauses and spends the user's Google AI credits (per video, at 720p: Omni 1.2 Flash 3 a second up to 10 s and 6 a second after, so 30 for 10 s and 60 for 15 s; at 360p a third of that; Veo 3.1 Lite 10; images 0). Each scene is checked against max_credits using Flow's own quote before anything is spent. Returns job ids immediately; use flow_wait for results.",
+      "Queue one clip or image per scene in the open Flow project. Runs one at a time per account with human-like pauses (with several accounts in flow_accounts, scenes are shared out and generate at the same time) and spends the user's Google AI credits (per video, at 720p: Omni 1.2 Flash 3 a second up to 10 s and 6 a second after, so 30 for 10 s and 60 for 15 s; at 360p a third of that; Veo 3.1 Lite 10; images 0). Each scene is checked against max_credits using Flow's own quote before anything is spent. Returns job ids immediately; use flow_wait for results.",
     inputSchema: shapes.generate,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -171,7 +171,7 @@ server.registerTool(
   {
     title: "Fast image batch via Flow's agent",
     description:
-      "Hand up to 50 image scenes to Flow's own Agent mode, which renders them all in parallel (minutes for a whole batch instead of one paced job per scene) and enriches each prompt itself. Images only, 0 credits. Pass `references` (characters, places, objects, each with a short name) to attach them once in the agent's composer, the way its + button does, and `scene_references` to say which scenes use which, so a whole story stays on-model. Scenes the agent drops are asked for again, then made one by one with their references. The finished images are moved into one Flow collection (<folder>-<job id>) and downloaded as ONE ZIP of originals, not one by one; if that download stops, the job fails without making anything again and flow_download with `collection` fetches them. Less exact than flow_generate: the agent picks the wording, no techniques, and each image is matched back to its scene by its stored prompt. Returns a job id; use flow_wait.",
+      "Hand up to 50 image scenes to Flow's own Agent mode, which renders them all in parallel (minutes for a whole batch instead of one paced job per scene) and enriches each prompt itself. Images only, 0 credits. Pass `references` (characters, places, objects, each with a short name) to attach them once in the agent's composer, the way its + button does, and `scene_references` to say which scenes use which, so a whole story stays on-model. With several accounts enabled (flow_accounts) the batch is split between them and every account's agent works at the same time; files keep their scene numbers (a batch with 'asset:' references stays on the first account). Scenes the agent drops are asked for again, then made one by one with their references. The finished images are moved into one Flow collection (<folder>-<job id>) and downloaded as ONE ZIP of originals, not one by one; if that download stops, the job fails without making anything again and flow_download with `collection` fetches them. Less exact than flow_generate: the agent picks the wording, no techniques, and each image is matched back to its scene by its stored prompt. Returns job id(s); use flow_wait.",
     inputSchema: shapes.agent,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -271,7 +271,7 @@ server.registerTool(
     inputSchema: shapes.projects,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
-  () => reply(patient("flow_projects", core.projects())),
+  (args) => reply(patient("flow_projects", core.projects(args))),
 );
 
 server.registerTool(
@@ -307,6 +307,30 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   (args) => reply(patient("flow_characters", core.characters(args))),
+);
+
+server.registerTool(
+  "flow_accounts",
+  {
+    title: "Flow accounts working in parallel",
+    description:
+      "Several Google accounts can drive Flow at the same time, each in its own Chrome window with its own project: queued work (flow_generate scenes, flow_agent_images batches, flow_cutout takes) is shared out and every account generates at once, one job at a time each. action list (default) shows each account: signed in, project open, busy. add creates an account and opens its Chrome on Flow - the user signs in to Google there BY HAND (never type credentials for them) and opens a project. open brings an account's window up; enable / disable lets an account take work or not. Media already in a Flow project (asset:..., edits, continuations, characters) lives in one account's project, so that work goes to the first account unless `account` is passed.",
+    inputSchema: shapes.accounts,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_accounts", core.accounts(args))),
+);
+
+server.registerTool(
+  "flow_image_models",
+  {
+    title: "Image models and the default one",
+    description:
+      "List the image models Flow offers right now (read from Flow's own menu) and which one image jobs use when they name none. Pass set_default to save the user's choice, e.g. 'Nano Banana Pro'; it then applies to flow_generate image scenes, flow_agent_images and flow_cutout until changed. 'latest' goes back to always using the newest Nano Banana. Any single call can still name its own `model`. Ask the user which model they want before setting it.",
+    inputSchema: shapes.image_models,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_image_models", core.image_models(args))),
 );
 
 server.registerTool(
