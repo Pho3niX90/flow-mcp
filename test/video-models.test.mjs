@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { estimateOmniFlash12Credits, isOmniFlash12, matchesModelLabel, OMNI_FLASH_12_DURATIONS } from "../dist/video-models.js";
+import { estimateOmniFlash12Credits, isOmniFlash12, matchesModelLabel, modelKey, OMNI_FLASH_12_DURATIONS } from "../dist/video-models.js";
 
 test("Omni 1.2 aliases match without accidentally choosing Omni 1.1", () => {
   assert.ok(matchesModelLabel("Gemini Omni 1.2 Flash", "Omni Flash 1.2"));
@@ -9,9 +9,16 @@ test("Omni 1.2 aliases match without accidentally choosing Omni 1.1", () => {
   assert.ok(matchesModelLabel("Omni 1.2 Flash", "Omni 1.2 Flash"));
   assert.ok(!matchesModelLabel("Omni 1.1 Flash", "Omni Flash 1.2"));
   assert.ok(!isOmniFlash12("Omni Flash 1.1"));
+});
+
+test("model matching ignores punctuation, hyphens, spaces and icon ligatures", () => {
+  assert.equal(modelKey("volume_up Veo 3.1 - Lite"), "volumeupveo3.1lite");
   assert.ok(matchesModelLabel("Veo 3.1 - Lite", "Veo 3.1 - Lite"));
+  assert.ok(matchesModelLabel("volume_up Veo 3.1 - Lite", "Veo 3.1 Lite"));
   assert.ok(matchesModelLabel("Veo 3.1 - Fast", "  veo 3.1 - fast  "));
+  assert.ok(matchesModelLabel("🍌 Nano Banana 2.1", "Nano Banana 2.1"));
   assert.ok(!matchesModelLabel("Veo 3.1 - Lite", "Veo 3.1 - Fast"));
+  assert.ok(!matchesModelLabel("Veo 3.1 - Lite", "   "));
 });
 
 test("Omni 1.2 covers all second increments from 3 to 15", () => {
