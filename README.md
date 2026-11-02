@@ -279,6 +279,7 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 | *"Not signed in"* or *"no project open"* | Run `npm run login`, sign in, open a Flow project, leave the window open |
 | A clip generated but no file arrived | The media is still in Flow. `flow_download` pulls it back for nothing. Never re-generate and pay twice |
 | Everything times out | The Chrome window was closed, or the machine slept. Reopen it with `npm run login` |
+| `connectOverCDP`: *"Browser context management is not supported"* | Seen on Chrome 156; update Google Chrome to a newer version |
 
 ---
 

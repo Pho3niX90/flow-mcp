@@ -124,7 +124,9 @@ async function readCredits(page: Page): Promise<number | undefined> {
 const settingsTrigger = (page: Page) => page.getByRole("button", { name: "Settings trigger" });
 
 // A tile's identity is the media inside it, and nothing else. Images carry a uuid in data-media-id; other tiles carry
-// one in the media URL when Flow serves it as flow-content.google/<kind>/<uuid> (2026-10-21).
+// one in the media URL when Flow serves it as flow-content.google/<kind>/<uuid> (2026-10-21). New video tiles are
+// also served on signed flow.google.com/asb/<token> links with no uuid anywhere (2026-11-01), so the asb token is the
+// identity there (identical across reload, rename and hover swap from <img> to <video>; any "=..." suffix is dropped).
 // A rendering tile already carries its final title (2026-10-09) and an error tile carries one too (2026-10-11),
 // so neither counts as media until it is done.
 //
@@ -140,7 +142,7 @@ const TILE_ID_JS = `(tile) => {
   // once it plays, so the thumbnail is read first and the tile keeps one id either way.
   const media = tile.querySelector("img[src]") || tile.querySelector("video[src]");
   const src = media?.getAttribute("src") || "";
-  return src.match(/[0-9a-f]{8}-[0-9a-f-]{27}/)?.[0] || undefined;
+  return src.match(/[0-9a-f]{8}-[0-9a-f-]{27}/)?.[0] || src.match(/\\/asb\\/([\\w-]{40,})/)?.[1] || undefined;
 }`;
 
 // What the grid looked like before a job started: the media uuids of the tiles mounted at the top, plus the titles
@@ -703,6 +705,14 @@ const announced: { name: string; at: number }[] = [];
 const listening = new WeakSet<Page>();
 const downloadSessions = new WeakMap<Page, CDPSession>();
 
+async function applyDownloadDir(cdp: CDPSession): Promise<boolean> {
+  const behaviour = { behavior: "allowAndName", downloadPath: DOWNLOAD_DIR, eventsEnabled: true } as const;
+  if (await cdp.send("Browser.setDownloadBehavior", behaviour).then(() => true, () => false)) return true;
+  // Chrome 156 refuses the browser-wide call for the default context (issue #22); the older per-page call may still
+  // be honoured on the same session, and if not, waitForDownloadedFile watches ~/Downloads with provenance checks.
+  return cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOAD_DIR }).then(() => true, () => false);
+}
+
 // Playwright keeps a download in a per-connection temp file it can delete from under us; pointing Chrome itself at a
 // directory we own makes the bytes ours the moment they land.
 async function useOwnDownloadDir(page: Page): Promise<void> {
@@ -720,12 +730,11 @@ async function useOwnDownloadDir(page: Page): Promise<void> {
   }
   // One session per page, kept open and reused. Chrome puts the download folder back to its default when the session
   // that set it closes, so it is never detached; a new one is opened only when the old one has stopped answering.
-  const behaviour = { behavior: "allowAndName", downloadPath: DOWNLOAD_DIR, eventsEnabled: true } as const;
   const open = downloadSessions.get(page);
-  if (open && (await open.send("Browser.setDownloadBehavior", behaviour).then(() => true, () => false))) return;
+  if (open && (await applyDownloadDir(open))) return;
   const cdp = await page.context().newCDPSession(page);
   downloadSessions.set(page, cdp);
-  await cdp.send("Browser.setDownloadBehavior", behaviour).catch(() => {});
+  await applyDownloadDir(cdp);
 }
 
 // Everything already sitting in either folder, so a new arrival can be told apart from what was there before.
