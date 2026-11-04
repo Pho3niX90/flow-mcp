@@ -21,13 +21,13 @@ New here? [GETTING-STARTED.md](GETTING-STARTED.md) takes you from nothing to you
 
 | | |
 |---|---|
-| **macOS or Windows 10/11** | Developed and tested on macOS. Windows is supported (Chrome, the Recycle Bin and the panel launcher all have Windows versions), but it hasn't been run on a real PC yet, so please report anything that breaks |
+| **macOS, Windows 10/11 or Linux** | Runs on macOS, Windows and Linux. On Linux, Chrome and Chromium are found where distributions put them, deletes go to the freedesktop Trash, and the panel starts with `Flow Studio.sh`. Please report anything that breaks |
 | **Node.js 22 or newer** | `node --version` |
-| **Google Chrome** | Any recent version |
+| **Google Chrome** | Any recent version. On Linux, Chromium is used if Chrome is not installed (`FLOW_MCP_CHROME` picks a specific build), but real Chrome is what Flow was mapped against and what Google's sign-in trusts |
 | **A Google account** | Free. Flow gives every account 50 credits a day; a paid Google AI plan adds more and unlocks 1080p downloads. Developed on a Pro plan |
-| **FFmpeg** *(optional)* | Mac: `brew install ffmpeg` · Windows: `winget install Gyan.FFmpeg`. Needed only to join clips, mix music or record narration |
+| **FFmpeg** *(optional)* | Mac: `brew install ffmpeg` · Windows: `winget install Gyan.FFmpeg` · Linux: `sudo apt install ffmpeg`. Needed only to join clips, mix music or record narration |
 | **A Google AI Studio key** *(optional, free)* | Only for the Google narration voices. See below |
-| **whisper.cpp** *(optional, free)* | Only for captions: it hears the words, on your computer. Mac: `brew install whisper-cpp` · Windows: `whisper-cli.exe` from [the whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), on your PATH. The speech model it needs downloads by itself the first time you caption a video: 148 MB for English, 574 MB for any other language |
+| **whisper.cpp** *(optional, free)* | Only for captions: it hears the words, on your computer. Mac: `brew install whisper-cpp` · Windows: `whisper-cli.exe` from [the whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), on your PATH · Linux: `sudo apt install whisper.cpp` (Debian, Ubuntu and Kali package it; `FLOW_MCP_WHISPER` points at it if your distribution names the binary differently). The speech model it needs downloads by itself the first time you caption a video: 148 MB for English, 574 MB for any other language |
 
 A display must stay awake: the Chrome window is really being driven, so the machine cannot be
 headless or asleep mid-run.
@@ -166,7 +166,7 @@ The same features, without an AI assistant in the loop:
 npm run studio     # then open http://127.0.0.1:8787
 ```
 
-or double-click **Flow Studio.command** (Mac) or **Flow Studio.cmd** (Windows).
+or double-click **Flow Studio.command** (Mac), **Flow Studio.cmd** (Windows) or **Flow Studio.sh** (Linux).
 
 Eight tabs, in the order you would use them:
 
@@ -267,7 +267,8 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
   language setting is never changed, and prompts can be written in any language.
 - Environment variables: `GEMINI_API_KEY`, `FLOW_MCP_PORT` (8787), `FLOW_MCP_OUTPUT`,
   `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PAUSE_MIN_S`,
-  `FLOW_MCP_PAUSE_MAX_S`.
+  `FLOW_MCP_PAUSE_MAX_S`. Helper programs, if they are not on your PATH: `FLOW_MCP_FFMPEG`,
+  `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
 
 ## If something goes wrong
 

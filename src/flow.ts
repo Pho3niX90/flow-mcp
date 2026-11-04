@@ -673,12 +673,19 @@ async function waitForDownloadedFile(page: Page, before: DownloadWatch, timeoutM
   );
 }
 
-// Flow reveals a tile's controls on a genuine pointer move, so the mouse is driven to the tile itself.
+// Flow reveals a tile's controls on a genuine pointer move, so the mouse is driven to the tile itself. It has to be a
+// real MOVE: Chrome emits no pointermove when the pointer is asked to go where it already is, so a second attempt on
+// the same tile hovered NOTHING, the toolbar never appeared, and the right-click fallback raised Chrome's own context
+// menu over the <video> instead. That is how a finished paid clip failed to download three times running on
+// 2026-11-04 while the same tile downloaded fine minutes later. The pointer is parked away from the tile first and
+// then walked in over several steps, so every call is a movement the page can see.
 async function hoverTile(page: Page, tile: Locator, settleMs = 900): Promise<void> {
   await tile.scrollIntoViewIfNeeded();
   const box = await tile.boundingBox();
   if (box) {
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.move(4, 4);
+    await pause(page, 120);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 });
     await pause(page, settleMs);
   } else {
     await tile.hover();
@@ -1071,11 +1078,15 @@ async function downloadTile(page: Page, target: Locator | TileResolver, targetSt
       const before = downloadsNow();
       // Flow only shows a tile's toolbar for a real pointer move over it - Playwright's hover() does not trigger it.
       // The toolbar's "More options" beats a right-click, which can land on the <video> and raise Chrome's own menu.
-      await hoverTile(page, tile, 250);
+      // 250 ms is the bulk-download pace; a tile that has only just finished rendering gets more room on each retry.
+      await hoverTile(page, tile, attempt === 0 ? 250 : attempt === 1 ? 900 : 1500);
       const more = tile.getByRole("button", { name: "More options" });
       // isVisible() answers at once whatever timeout it is given, so wait for the button itself.
-      if (await more.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) await more.click();
-      else await tile.click({ button: "right" });
+      if (await more.waitFor({ state: "visible", timeout: attempt ? 6000 : 3000 }).then(() => true, () => false)) await more.click();
+      // Right-click is the last resort and never for a video: on a <video> it raises Chrome's OWN context menu, which
+      // is browser UI the page cannot close, so it swallows the attempts that follow instead of failing cleanly.
+      else if (attempt === 2 && (await tile.locator("video").count().catch(() => 1)) === 0) await tile.click({ button: "right" });
+      else throw new Error("The tile's toolbar never appeared, so its menu could not be opened.");
       const download = page.getByRole("menuitem", { name: "Download", exact: true });
       if (!(await download.isVisible({ timeout: 8000 }).catch(() => false))) {
         // Saying what Flow actually offered turns "locator timed out" into something that explains itself next time.
@@ -1198,8 +1209,14 @@ export async function runGeneration(job: Job): Promise<string[]> {
   const s = job.params;
 
   await ensureProjectGrid(page);
+  // Flow can be sitting on its agent session panel - left by an agent batch, or by the user's own agent session, and
+  // it survives a reload. That panel replaces the composer, so the Agent chip is not on the page at all, and reading
+  // aria-pressed on it used to sit out Playwright's 30 s default and fail the job before anything was even quoted
+  // (seen live on Linux, 2026-11-04, on a free still). Close it first, then ask the chip with a short timeout:
+  // "no chip" means "not in agent mode", which is exactly what this job wants.
+  await closeAgentSession(page);
   const agent = agentToggle(page);
-  if ((await agent.getAttribute("aria-pressed")) === "true") await agent.click();
+  if ((await agent.getAttribute("aria-pressed", { timeout: 5000 }).catch(() => null)) === "true") await setAgentMode(page, false);
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click();
 
@@ -1808,17 +1825,28 @@ async function setAgentSettings(page: Page, confirm: "Always" | "Never", imageAs
 
 // "Reuse prompt" on an agent-made tile opens the agent's session panel, which hides the normal composer.
 async function closeAgentSession(page: Page): Promise<void> {
-  const panel = page.getByRole("button", { name: "Start new session" });
-  if (await panel.isVisible().catch(() => false)) {
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+  // The panel is `flow-agent-panel`, the same element the agent SETTINGS panel uses; the session one is the variant
+  // with "Start new session" and "Close". Either way it sits where the composer goes and takes the Agent chip and
+  // "Settings trigger" off the page with it, so both are closed here. Checking the element and not only the button
+  // matters: Flow can restore the session panel on its own when a project is reopened.
+  const showing = (await page.locator("flow-agent-panel").count().catch(() => 0)) > 0;
+  const session = await page.getByRole("button", { name: "Start new session" }).isVisible().catch(() => false);
+  if (showing || session) {
+    await page.getByRole("button", { name: "Close", exact: true }).first().click({ timeout: 8000 }).catch(() => {});
     await pause(page, 1000);
+    await closeAgentSettings(page);
   }
   const clear = page.getByRole("button", { name: "Clear prompt" });
-  if (await clear.isVisible().catch(() => false)) await clear.click();
+  if (await clear.isVisible().catch(() => false)) await clear.click().catch(() => {});
   else {
-    await page.locator(".ProseMirror").first().click();
-    await page.keyboard.press("ControlOrMeta+a");
-    await page.keyboard.press("Delete");
+    // No composer to clear is not a failure here: the caller checks for what it needs next and says so properly.
+    await page.locator(".ProseMirror").first().click({ timeout: 5000 }).then(
+      async () => {
+        await page.keyboard.press("ControlOrMeta+a");
+        await page.keyboard.press("Delete");
+      },
+      () => {},
+    );
   }
   await pause(page, 400);
 }

@@ -8,12 +8,19 @@ import { basename, extname, join } from "node:path";
 // tools but have not been run on a real machine yet.
 export const IS_MAC = process.platform === "darwin";
 export const IS_WIN = process.platform === "win32";
+export const IS_LINUX = process.platform === "linux";
 
 // How the panel names this computer and its bin, so nothing says "Mac" on a PC.
 export const COMPUTER = IS_MAC ? "this Mac" : IS_WIN ? "this PC" : "this computer";
 export const BIN = IS_MAC ? "the Mac's Trash" : IS_WIN ? "the Recycle Bin" : "the Trash";
 
 export const FFMPEG_HINT = IS_MAC ? "brew install ffmpeg" : IS_WIN ? "winget install Gyan.FFmpeg" : "sudo apt install ffmpeg";
+
+// Where to get Chrome when none of the known paths exists. Flow's selectors were mapped against real Google Chrome;
+// a Chromium build can stand in through FLOW_MCP_CHROME, but Google's sign-in sometimes refuses one.
+export const CHROME_HINT = IS_LINUX
+  ? "install Google Chrome (the .deb at google.com/chrome), or set FLOW_MCP_CHROME to a Chromium build"
+  : "install Google Chrome from google.com/chrome, or set FLOW_MCP_CHROME to the Chrome executable path";
 
 export interface ToolLookupEnv {
   isWin?: boolean;
