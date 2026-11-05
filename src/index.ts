@@ -146,7 +146,8 @@ server.registerTool(
   "flow_assets",
   {
     title: "List project media",
-    description: "List the images and videos in the open Flow project (title and kind). Titles can be used as 'asset:<title>' in flow_generate or with flow_download.",
+    description:
+      "List the images, videos, scenes, characters and collections in the open Flow project (title and kind). Titles can be used as 'asset:<title>' in flow_generate or with flow_download. Media filed inside the project's Library (collections, and collections inside them) is not in that flat list: pass recursive: true to walk the whole Library, or collection: '<path>' for one collection; items then carry their `path` and a `ref` for flow_download.",
     inputSchema: shapes.assets,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
@@ -158,7 +159,7 @@ server.registerTool(
   {
     title: "Download existing project media",
     description:
-      "Download media that already exists in the Flow project, without regenerating it (no credits, including 1080p/2K upscales). Matches by the start of the title. `collection` fetches a whole Flow collection as ONE ZIP (originals, each under its own title): agent image batches put their images in a collection named <folder>-<job id> and download it that way.",
+      "Download media that already exists in the Flow project, without regenerating it (no credits, including 1080p/2K upscales). Pass `assets` for individual items matched by title prefix, or by Library `ref` ('<collection path>/<title>' from flow_assets; a character's portrait is saved from its editor). Or pass `collection` to fetch a whole Flow collection as ONE ZIP of originals (each under its own title, e.g. an agent batch whose download stopped).",
     inputSchema: shapes.download,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -288,7 +289,8 @@ server.registerTool(
   "flow_characters",
   {
     title: "List characters",
-    description: "List the reusable characters in the open Flow project, with their remembered voices (pass `with_voices: true` to read each voice live from Flow, ~8 s per character). Each can be used in a scene as 'asset:<name>'.",
+    description:
+      "List the reusable characters in the open Flow project, with their remembered voices (pass `with_voices: true` to read each voice live from Flow, ~8 s per character). Each can be used in a scene as 'asset:<name>'. Pass `include_library: true` to also list characters filed in Library collections, with a `ref` for flow_download.",
     inputSchema: shapes.characters,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
