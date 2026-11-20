@@ -81,8 +81,27 @@ async function clearBackdrops(page: Page): Promise<void> {
   }
 }
 
-// The agent's switch was renamed "Agent" -> "Flow Agent" (seen 2026-11-21); either name, and nothing else, is it.
-const agentToggle = (page: Page) => page.getByRole("button", { name: /^(Flow )?Agent$/ });
+// Flow renamed its agent toggle (2026-11-20): the plain "Agent" button became a switch whose accessible name says
+// what a click will do ("Turn on Flow Agent" / "Turn off Flow Agent"). Find either, and read its state from
+// aria-pressed, aria-checked or that name.
+function agentToggle(page: Page) {
+  return page
+    .getByRole("button", { name: /^(Agent|Turn (on|off) Flow Agent)$/ })
+    .or(page.getByRole("switch", { name: /Flow Agent|^Agent$/ }))
+    .first();
+}
+async function agentIsOn(page: Page): Promise<boolean | null> {
+  const t = agentToggle(page);
+  if (!(await t.count().catch(() => 0))) return null;
+  const pressed =
+    (await t.getAttribute("aria-pressed", { timeout: 3000 }).catch(() => null)) ??
+    (await t.getAttribute("aria-checked", { timeout: 3000 }).catch(() => null));
+  if (pressed === "true" || pressed === "false") return pressed === "true";
+  const name = ((await t.getAttribute("aria-label", { timeout: 3000 }).catch(() => null)) ?? (await t.innerText({ timeout: 3000 }).catch(() => ""))).trim();
+  if (/^Turn off/i.test(name)) return true;
+  if (/^Turn on/i.test(name)) return false;
+  return null;
+}
 
 // The agent's own image model, set to the newest Nano Banana like single images. Best effort: a batch never fails over it.
 // Since 2026-11-21 it is a radio group "Model" inside the "Image defaults" sub-panel (radios "🍌 Nano Banana 2.1" ...).
@@ -1362,8 +1381,7 @@ export async function runGeneration(job: Job): Promise<string[]> {
   // (seen live on Linux, 2026-11-04, on a free still). Close it first, then ask the chip with a short timeout:
   // "no chip" means "not in agent mode", which is exactly what this job wants.
   await closeAgentSession(page);
-  const agent = agentToggle(page);
-  if ((await agent.getAttribute("aria-pressed", { timeout: 5000 }).catch(() => null)) === "true") await setAgentMode(page, false);
+  if ((await agentIsOn(page)) === true) await setAgentMode(page, false);
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click();
 
@@ -1965,14 +1983,14 @@ async function setAgentMode(page: Page, on: boolean): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     await clearBackdrops(page);
     await closeAgentSettings(page);
-    if (((await agent.getAttribute("aria-pressed").catch(() => null)) === "true") === on) return;
+    if ((await agentIsOn(page)) === on) return;
     await agent.click({ timeout: 8000 }).catch((err: Error) => {
       const lines = err.message.split("\n").map((l) => l.trim());
       why = (lines.find((l) => /intercepts pointer events|not visible|not enabled|detached|not stable/.test(l)) ?? lines[0]).slice(0, 200);
     });
     await pause(page, 1500);
   }
-  if (((await agent.getAttribute("aria-pressed").catch(() => null)) === "true") !== on) {
+  if ((await agentIsOn(page)) !== on) {
     throw new Error(`Could not switch Agent mode ${on ? "on" : "off"}${why ? ` (${why})` : "; the click landed but the toggle did not change"}.`);
   }
 }
