@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, extractMediaIdFromUrl } from "../dist/tiles.js";
+import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, extractMediaIdFromUrl, parseVoiceFromSnapshot } from "../dist/tiles.js";
 
 test("extractMediaIdFromUrl reads UUIDs from Flow media URLs", () => {
   const uuid = "123e4567-e89b-12d3-a456-426614174000";
@@ -39,4 +39,44 @@ test("OUR_TITLE matches flow-mcp generated titles and ignores Flow auto titles",
   assert.equal(OUR_TITLE.test("Woman climbing granite wall"), false);
   assert.equal(OUR_TITLE.test("scene-01"), false);
   assert.equal(OUR_TITLE.test("MyFilm-scene-01-extra"), false);
+});
+
+test("cssAttrValue escapes quotes, backslashes, and control characters for CSS attribute selectors", () => {
+  assert.equal(cssAttrValue('plain-id_123'), 'plain-id_123');
+  assert.equal(cssAttrValue('Say "hi"'), 'Say \\"hi\\"');
+  assert.equal(cssAttrValue('a\\b"c'), 'a\\\\b\\"c');
+  assert.equal(cssAttrValue('x"] , * [y="'), 'x\\"] , * [y=\\"');
+  assert.equal(cssAttrValue("line1\nline2\r\f\0"), "line1\\a line2\\d \\c \\fffd ");
+});
+
+test("characterTilePattern matches exact character names without matching prefixed siblings", () => {
+  const re = characterTilePattern("Ollie");
+  assert.equal(re.test("Ollie"), true);
+  assert.equal(re.test("Ollieaccessibility_newfavoritemore_vert"), true);
+  assert.equal(re.test("Ollie\naccessibility_new"), true);
+  assert.equal(re.test("  Ollie person"), true);
+  assert.equal(re.test("Ollie_Villageaccessibility_newfavoritemore_vert"), false);
+  assert.equal(re.test("Ollie_Village"), false);
+  assert.equal(re.test("Big Ollie"), false);
+  // Regex metacharacters in character names are escaped safely.
+  assert.equal(characterTilePattern("Dr. A (2)").test("Dr. A (2)favorite"), true);
+  assert.equal(characterTilePattern("Dr. A (2)").test("DrX A (2)favorite"), false);
+});
+
+test("parseVoiceFromSnapshot reads the voice button right before Play preview", () => {
+  assert.equal(
+    parseVoiceFromSnapshot(`
+      - button "achird"
+      - button "Play preview"
+      - button "Remove"
+    `),
+    "achird",
+  );
+  assert.equal(
+    parseVoiceFromSnapshot(`
+      - button "Select a voice"
+    `),
+    undefined,
+  );
+  assert.equal(parseVoiceFromSnapshot(`- heading "Character"`), undefined);
 });

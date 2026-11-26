@@ -5,9 +5,12 @@ import { AGENT_BUTTON_RE, AGENT_SWITCH_RE, classifyAgentToggleState } from "./ag
 import { FLOW_URL, HOME_DIR, OUTPUT_ROOT, ensureEnglish, getFlowPage, inEnglish } from "./chrome.js";
 import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
+import { buildCollectionTree, findCollection, parentPath, refOf, splitLibraryRef, type FlowCollection } from "./library.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
-import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE } from "./tiles.js";
+import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseVoiceFromSnapshot } from "./tiles.js";
 import { matchesModelLabel } from "./video-models.js";
+
+export { refOf, type FlowCollection };
 
 export interface FlowState {
   url: string;
@@ -417,12 +420,14 @@ async function scrollToTop(page: Page): Promise<void> {
 // anything that has to find the same tile again should go through here.
 const tileOf = (page: Page, asset: FlowAsset) =>
   asset.name
-    ? page.locator(`flow-grid-tile-container[aria-label="${asset.name.replace(/"/g, '\\"')}"]`).first()
+    ? page.locator(`flow-grid-tile-container[aria-label="${cssAttrValue(asset.name)}"]`).first()
     : mediaTile(page, asset.id!);
 
 // A media id, and only a media id: whatever this returns is the tile that actually holds that piece of media.
-const mediaTile = (page: Page, id: string) =>
-  page.locator(`flow-grid-tile-container:has([data-media-id="${id}"]), flow-grid-tile-container:has([src*="${id}"])`).first();
+const mediaTile = (page: Page, id: string) => {
+  const safeId = cssAttrValue(id);
+  return page.locator(`flow-grid-tile-container:has([data-media-id="${safeId}"]), flow-grid-tile-container:has([src*="${safeId}"])`).first();
+};
 
 // A failed generation becomes a <flow-error-tile> ("Failed ... You have not been charged") with Flow's own Retry
 // button. Old failures can sit anywhere in the grid, so only error tiles above the first already-known tile count.
@@ -685,7 +690,7 @@ const ASSET_PREFIX = "asset:";
 // Waits for THIS upload by its own name until Flow has finished processing it (its picture carries a media id), so
 // a half-processed upload can never be taken for the next generation's result.
 async function waitForUpload(page: Page, name: string, timeoutMs: number): Promise<void> {
-  const tile = page.locator(`flow-grid-tile-container[aria-label="${name.replace(/"/g, '\\"')}"]:has([data-media-id])`);
+  const tile = page.locator(`flow-grid-tile-container[aria-label="${cssAttrValue(name)}"]:has([data-media-id])`);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await tile.count()) {
@@ -878,7 +883,7 @@ function tileByIdOrTitle(page: Page, id: string, title?: string): TileResolver {
     const byId = mediaTile(page, id);
     if (await byId.count()) return byId;
     if (title) {
-      const byTitle = page.locator(`flow-grid-tile-container[aria-label="${title.replace(/"/g, '\\"')}"]:has([src])`).first();
+      const byTitle = page.locator(`flow-grid-tile-container[aria-label="${cssAttrValue(title)}"]:has([src])`).first();
       if (await byTitle.count()) return byTitle;
     }
     throw new Error(
@@ -1804,23 +1809,7 @@ export async function editCharacter(name: string, change?: string, job?: Job): P
 // <name>"). Children only exist in the DOM once their parent is expanded, and the whole tree only while the Library
 // section is open (its header button is "Toggle library"). A collection's page is the same virtualised grid as All
 // media, with `flow-collection-tile` tiles for sub-collections and `flow-character-tile` for characters filed there.
-export interface FlowCollection {
-  id: string;
-  name: string;
-  depth: number;
-  // Names from the top of the Library down, joined with "/": "Places/Place B".
-  path: string;
-}
-
 const LIBRARY_TREE = 'ul[aria-label="Collections"]';
-const normPath = (path: string) =>
-  path
-    .split("/")
-    .map((p) => p.trim().toLowerCase())
-    .filter(Boolean)
-    .join("/");
-const parentPath = (path: string) => path.split("/").slice(0, -1).join("/");
-export const refOf = (a: { name: string; path?: string }) => (a.path ? `${a.path}/${a.name}` : a.name);
 
 function projectRoot(page: Page): string {
   const root = page.url().match(/^https:\/\/[^/]+\/project\/[0-9a-f-]{36}/)?.[0];
@@ -1846,7 +1835,7 @@ async function readLibraryTree(page: Page): Promise<FlowCollection[]> {
       return [];
     }
   }
-  const row = (id: string) => tree.locator(`div.nested-list-row[data-item-id="${id}"] button.expand-toggle-button`);
+  const row = (id: string) => tree.locator(`div.nested-list-row[data-item-id="${cssAttrValue(id)}"] button.expand-toggle-button`);
   const expanded: string[] = [];
   try {
     for (let i = 0; i < 500; i++) {
@@ -1870,15 +1859,7 @@ async function readLibraryTree(page: Page): Promise<FlowCollection[]> {
         })),
       LIBRARY_TREE,
     );
-    // Rows come in document order (a parent before its children), so a stack of names indexed by depth gives each path.
-    const stack: string[] = [];
-    return rows
-      .filter((r) => r.id && r.name)
-      .map((r) => {
-        stack.length = r.depth;
-        stack.push(r.name);
-        return { ...r, path: stack.join("/") };
-      });
+    return buildCollectionTree(rows);
   } finally {
     for (const id of [...expanded].reverse()) {
       await row(id).click({ timeout: 3000 }).catch(() => {});
@@ -1895,24 +1876,9 @@ async function readLibraryTree(page: Page): Promise<FlowCollection[]> {
   }
 }
 
-function findCollection(all: FlowCollection[], path: string): FlowCollection {
-  const want = normPath(path);
-  const byPath = all.find((c) => normPath(c.path) === want);
-  if (byPath) return byPath;
-  // A bare name is fine as long as only one collection carries it.
-  const byName = all.filter((c) => c.name.toLowerCase() === want);
-  if (byName.length === 1) return byName[0];
-  const known = all.map((c) => c.path);
-  throw new Error(
-    byName.length > 1
-      ? `Several collections are called "${path}": ${byName.map((c) => c.path).join(", ")}. Pass the full path.`
-      : `No Library collection "${path}". ${known.length ? `Collections: ${known.slice(0, 40).join(", ")}${known.length > 40 ? ", ..." : ""}` : "This project's Library is empty."}`,
-  );
-}
-
 // Opens one collection's own page and scans its grid. Items carry the collection's path.
 async function scanCollection(page: Page, root: string, collection: FlowCollection, stopAt?: (assets: FlowAsset[]) => boolean): Promise<FlowAsset[]> {
-  await page.goto(inEnglish(`${root}/collection/${collection.id}`), { waitUntil: "domcontentloaded" });
+  await page.goto(inEnglish(`${root}/collection/${encodeURIComponent(collection.id)}`), { waitUntil: "domcontentloaded" });
   await page.waitForSelector(".page-container", { timeout: 20_000 }).catch(() => {
     throw new Error(`The Library collection "${collection.path}" did not load (${page.url()}). Try again.`);
   });
@@ -1966,18 +1932,6 @@ export async function listAssets({ recursive = false, collection }: { recursive?
   } finally {
     await ensureProjectGrid(page).catch(() => {});
   }
-}
-
-// "Places/Place B/Some title" -> the deepest collection the name starts with, and the title left over.
-function splitLibraryRef(tree: FlowCollection[], ref: string): { collection: FlowCollection; title: string } | undefined {
-  const parts = ref.replace(/\/+$/, "").split("/");
-  // The whole ref may itself be a collection (title ""), so it is tried first.
-  for (let i = parts.length; i >= 1; i--) {
-    const want = normPath(parts.slice(0, i).join("/"));
-    const collection = tree.find((c) => normPath(c.path) === want);
-    if (collection) return { collection, title: parts.slice(i).join("/").trim() };
-  }
-  return undefined;
 }
 
 // A character tile's menu has no Download (Add to prompt, Favorite, Copy, Rename, Move out of collection, Move to
@@ -2212,8 +2166,6 @@ export function rememberVoice(name: string, voice: string | undefined): void {
 // newline), so "Ollie" must not match "Ollie_Village": the name has to be followed by the icon text or the end. The old
 // plain hasText search opened the wrong character for any name that starts another (2026-10-19: "Ollie" opened
 // "Ollie_Village").
-export const characterTilePattern = (name: string) =>
-  new RegExp(`^\\s*${escapeRe(name)}(?=\\s|$|accessibility_new|person|favorite)`);
 const characterTile = (page: Page, name: string) =>
   page.locator("flow-character-tile").filter({ hasText: characterTilePattern(name) }).first();
 
@@ -2233,12 +2185,6 @@ async function openCharacter(page: Page, name: string): Promise<void> {
 
 // The editor shows the voice as a button NAMED after it ("orus"), right before "Play preview" and "Remove". A character
 // without one shows "Select a voice" instead (mapped live 2026-10-19).
-export function parseVoiceFromSnapshot(snap: string): string | undefined {
-  if (/button "Select a voice"/.test(snap)) return undefined;
-  const lines = snap.split(/\r?\n/);
-  const at = lines.findIndex((l) => l.includes('button "Play preview"'));
-  return at > 0 ? lines[at - 1].match(/button "([^"]+)"/)?.[1] : undefined;
-}
 async function readVoice(page: Page): Promise<string | undefined> {
   return parseVoiceFromSnapshot(await page.locator("main").first().ariaSnapshot());
 }
@@ -2833,7 +2779,7 @@ export async function runContinue(job: Job): Promise<string[]> {
     // 2. Animate the frame we just saved. Flow names it after the source and puts the newest copy at the top, and
     //    the click also flips Agent on, which is what lets a character ride along.
     job.progress = "loading the frame into the composer";
-    const frame = page.locator(`flow-grid-tile-container[aria-label="${`Saved frame from ${source.name}`.replace(/"/g, '\\"')}"]`).first();
+    const frame = page.locator(`flow-grid-tile-container[aria-label="${cssAttrValue(`Saved frame from ${source.name}`)}"]`).first();
     await frame.waitFor({ state: "visible", timeout: 30_000 });
     await hoverTile(page, frame);
     await frame.getByRole("button", { name: "More options" }).click();
