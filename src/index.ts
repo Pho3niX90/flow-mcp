@@ -1,20 +1,74 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool, type ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { LocalCore, shapes, type Core } from "./core.js";
 import { PLAYBOOK } from "./playbook.js";
 import { RemoteCore } from "./remote.js";
 import { PORT, startServer } from "./server.js";
+import {
+  ALL_GROUP_IDS,
+  ALWAYS_ON_TOOLS,
+  DISCOVERY_TOOLS,
+  GROUP_BY_ID,
+  SERVER_INSTRUCTIONS,
+  TOOL_TO_GROUP,
+  assertToolGroupCoverage,
+  closestNames,
+  formatGroupsOverview,
+  groupStatus,
+  parseToolsMode,
+  resolveTargets,
+  searchTools,
+  summarizeDescription,
+  type ToolGroupId,
+  type ToolMeta,
+} from "./toolsets.js";
 
 const local = new LocalCore();
 const role = await startServer(local);
 const core: Core = role === "client" ? new RemoteCore() : local;
 const studio = role === "none" ? undefined : `http://127.0.0.1:${PORT}`;
 
-const server = new McpServer({ name: "flow-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "flow-mcp", version: "0.2.0" }, { instructions: SERVER_INSTRUCTIONS });
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+type ToolEntry = {
+  name: string;
+  title: string;
+  description: string;
+  schema: z.ZodObject<z.ZodRawShape>;
+  params: string[];
+  handle: RegisteredTool;
+  handler: (args: Record<string, unknown>, extra: unknown) => Promise<ToolResult> | ToolResult;
+};
+
+const registry = new Map<string, ToolEntry>();
+
+function tool<S extends z.ZodRawShape>(
+  name: string,
+  config: {
+    title: string;
+    description: string;
+    inputSchema: S;
+    annotations?: ToolAnnotations;
+  },
+  handler: (args: z.infer<z.ZodObject<S>>, extra: Parameters<ToolCallback<S>>[1]) => Promise<ToolResult> | ToolResult,
+): RegisteredTool {
+  const handle = server.registerTool(name, config, handler as ToolCallback<S>);
+  registry.set(name, {
+    name,
+    title: config.title,
+    description: config.description,
+    schema: z.object(config.inputSchema),
+    params: Object.keys(config.inputSchema),
+    handle,
+    handler: handler as ToolEntry["handler"],
+  });
+  return handle;
+}
 const reply = async (work: Promise<unknown>, extra: object = {}): Promise<ToolResult> => {
   try {
     const data = await work;
@@ -84,7 +138,7 @@ async function waitFor({ job_ids, timeout_seconds }: { job_ids?: string[]; timeo
   return mine.length ? { ...queued, finished: queued.finished && tasksFinished, tasks: done } : queued;
 }
 
-server.registerTool(
+tool(
   "flow_status",
   {
     title: "Flow status",
@@ -93,10 +147,23 @@ server.registerTool(
     inputSchema: shapes.status,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
-  (args) => reply(core.status(args), { studio, playbook: PLAYBOOK, ...(tasks.size ? { slow_calls: [...tasks.values()].map(({ result, ...t }) => t) } : {}) }),
+  (args) => {
+    const hidden = [...registry.values()].filter((e) => !e.handle.enabled).length;
+    const playbook =
+      hidden > 0
+        ? {
+            ...PLAYBOOK,
+            workflow: [
+              ...PLAYBOOK.workflow,
+              `${hidden} more tools (images, video, characters, projects, library, sound, film, music) are currently off; call flow_tools to search or switch them on, or flow_call to run one by name.`,
+            ],
+          }
+        : PLAYBOOK;
+    return reply(core.status(args), { studio, playbook, ...(tasks.size ? { slow_calls: [...tasks.values()].map(({ result, ...t }) => t) } : {}) });
+  },
 );
 
-server.registerTool(
+tool(
   "flow_generate",
   {
     title: "Queue Flow generations",
@@ -108,7 +175,7 @@ server.registerTool(
   (args) => reply(core.generate(args)),
 );
 
-server.registerTool(
+tool(
   "flow_wait",
   {
     title: "Wait for Flow jobs",
@@ -120,7 +187,7 @@ server.registerTool(
   (args) => reply(waitFor(args)),
 );
 
-server.registerTool(
+tool(
   "flow_cancel",
   {
     title: "Cancel a queued Flow job",
@@ -131,7 +198,7 @@ server.registerTool(
   (args) => reply(core.cancel(args)),
 );
 
-server.registerTool(
+tool(
   "flow_retry",
   {
     title: "Retry failed Flow jobs",
@@ -142,7 +209,7 @@ server.registerTool(
   (args) => reply(core.retry(args)),
 );
 
-server.registerTool(
+tool(
   "flow_assets",
   {
     title: "List project media",
@@ -154,7 +221,7 @@ server.registerTool(
   (args) => reply(patient("flow_assets", core.assets(args))),
 );
 
-server.registerTool(
+tool(
   "flow_download",
   {
     title: "Download existing project media",
@@ -166,7 +233,7 @@ server.registerTool(
   (args) => reply(patient("flow_download", core.download(args))),
 );
 
-server.registerTool(
+tool(
   "flow_agent_images",
   {
     title: "Fast image batch via Flow's agent",
@@ -178,7 +245,7 @@ server.registerTool(
   (args) => reply(core.agent(args)),
 );
 
-server.registerTool(
+tool(
   "flow_cutout",
   {
     title: "Image with a transparent background",
@@ -190,7 +257,7 @@ server.registerTool(
   (args) => reply(core.cutout(args)),
 );
 
-server.registerTool(
+tool(
   "flow_edit",
   {
     title: "Edit an existing video",
@@ -202,7 +269,7 @@ server.registerTool(
   (args) => reply(core.edit(args)),
 );
 
-server.registerTool(
+tool(
   "flow_continue",
   {
     title: "Continue a clip, keeping a character attached",
@@ -214,7 +281,7 @@ server.registerTool(
   (args) => reply(patient("flow_continue", core.continue_shot(args))),
 );
 
-server.registerTool(
+tool(
   "flow_trash",
   {
     title: "Move an item to Flow's Trash",
@@ -226,7 +293,7 @@ server.registerTool(
   (args) => reply(patient("flow_trash", core.trash(args))),
 );
 
-server.registerTool(
+tool(
   "flow_rename",
   {
     title: "Rename an item in the Flow project",
@@ -238,7 +305,7 @@ server.registerTool(
   (args) => reply(patient("flow_rename", core.rename(args))),
 );
 
-server.registerTool(
+tool(
   "flow_character",
   {
     title: "Create a reusable character",
@@ -250,7 +317,7 @@ server.registerTool(
   (args) => reply(patient("flow_character", core.character(args))),
 );
 
-server.registerTool(
+tool(
   "flow_character_edit",
   {
     title: "Restyle an existing character",
@@ -262,7 +329,7 @@ server.registerTool(
   (args) => reply(patient("flow_character_edit", core.character_edit(args))),
 );
 
-server.registerTool(
+tool(
   "flow_projects",
   {
     title: "List Flow projects",
@@ -274,7 +341,7 @@ server.registerTool(
   (args) => reply(patient("flow_projects", core.projects(args))),
 );
 
-server.registerTool(
+tool(
   "flow_new_project",
   {
     title: "Start a new Flow project",
@@ -285,7 +352,7 @@ server.registerTool(
   (args) => reply(patient("flow_new_project", core.new_project(args))),
 );
 
-server.registerTool(
+tool(
   "flow_open_project",
   {
     title: "Open a Flow project",
@@ -297,7 +364,7 @@ server.registerTool(
   (args) => reply(patient("flow_open_project", core.open_project(args))),
 );
 
-server.registerTool(
+tool(
   "flow_rename_project",
   {
     title: "Rename the open Flow project",
@@ -309,7 +376,7 @@ server.registerTool(
   (args) => reply(patient("flow_rename_project", core.rename_project(args))),
 );
 
-server.registerTool(
+tool(
   "flow_characters",
   {
     title: "List characters",
@@ -321,7 +388,7 @@ server.registerTool(
   (args) => reply(patient("flow_characters", core.characters(args))),
 );
 
-server.registerTool(
+tool(
   "flow_accounts",
   {
     title: "Flow accounts working in parallel",
@@ -333,7 +400,7 @@ server.registerTool(
   (args) => reply(patient("flow_accounts", core.accounts(args))),
 );
 
-server.registerTool(
+tool(
   "flow_image_models",
   {
     title: "Image models and the default one",
@@ -345,7 +412,7 @@ server.registerTool(
   (args) => reply(patient("flow_image_models", core.image_models(args))),
 );
 
-server.registerTool(
+tool(
   "flow_techniques",
   {
     title: "Film technique presets",
@@ -357,7 +424,7 @@ server.registerTool(
   (args) => reply(core.techniques(args)),
 );
 
-server.registerTool(
+tool(
   "flow_narrate",
   {
     title: "Record narration",
@@ -369,7 +436,7 @@ server.registerTool(
   (args) => reply(patient("flow_narrate", core.narrate(args))),
 );
 
-server.registerTool(
+tool(
   "flow_voices",
   {
     title: "List Flow voices",
@@ -380,7 +447,7 @@ server.registerTool(
   () => reply(core.voices()),
 );
 
-server.registerTool(
+tool(
   "flow_assemble",
   {
     title: "Assemble clips into one video",
@@ -392,7 +459,7 @@ server.registerTool(
   (args) => reply(patient("flow_assemble", core.assemble(args))),
 );
 
-server.registerTool(
+tool(
   "flow_transcribe",
   {
     title: "Hear the words in a video or audio file",
@@ -404,7 +471,7 @@ server.registerTool(
   (args) => reply(patient("flow_transcribe", core.transcribe(args))),
 );
 
-server.registerTool(
+tool(
   "flow_captions",
   {
     title: "Add captions to a video",
@@ -416,7 +483,7 @@ server.registerTool(
   (args) => reply(patient("flow_captions", core.captions(args))),
 );
 
-server.registerTool(
+tool(
   "flow_presenter",
   {
     title: "Talking presenter over footage",
@@ -428,7 +495,7 @@ server.registerTool(
   (args) => reply(patient("flow_presenter", core.presenter(args))),
 );
 
-server.registerTool(
+tool(
   "flow_music_status",
   {
     title: "Check Flow Music session, credits, and music lane",
@@ -440,7 +507,7 @@ server.registerTool(
   (args) => reply(patient("flow_music_status", core.music_status(args))),
 );
 
-server.registerTool(
+tool(
   "flow_music",
   {
     title: "Generate songs in Google Flow Music",
@@ -452,7 +519,7 @@ server.registerTool(
   (args) => reply(core.music(args)),
 );
 
-server.registerTool(
+tool(
   "flow_music_songs",
   {
     title: "List songs in Flow Music library",
@@ -464,7 +531,7 @@ server.registerTool(
   (args) => reply(patient("flow_music_songs", core.music_songs(args))),
 );
 
-server.registerTool(
+tool(
   "flow_music_download",
   {
     title: "Download existing songs from Flow Music",
@@ -475,5 +542,298 @@ server.registerTool(
   },
   (args) => reply(patient("flow_music_download", core.music_download(args))),
 );
+
+const flowToolsShape = {
+  query: z.string().min(1).optional().describe("Search tools by keywords across names, titles, descriptions, and parameters (all words must match)."),
+  group: z.string().min(1).optional().describe("Inspect one group by name (e.g. 'music', 'film', 'characters')."),
+  enable: z.array(z.string().min(1)).optional().describe("Group or tool names to switch on for this session (e.g. ['music'] or ['flow_assemble'])."),
+  disable: z.array(z.string().min(1)).optional().describe("Group or tool names to switch off again (core, flow_tools, and flow_call stay on)."),
+};
+
+const flowCallShape = {
+  tool: z.string().min(1).describe("Exact tool name, e.g. 'flow_assemble' or 'flow_music'."),
+  arguments: z.record(z.string(), z.unknown()).optional().describe("Arguments object for that tool, matching its input schema."),
+};
+
+const toJsonSchema = (schema: z.ZodObject<z.ZodRawShape>) =>
+  z.toJSONSchema(schema, { target: "draft-7", io: "input" });
+
+const formatZodIssues = (issues: z.core.$ZodIssue[]) =>
+  issues.map((i) => (i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
+
+const getToolMetas = (): ToolMeta[] =>
+  [...registry.values()].map((e) => ({
+    name: e.name,
+    group: TOOL_TO_GROUP.get(e.name)!,
+    title: e.title,
+    description: e.description,
+    params: e.params,
+  }));
+
+const getEnabledNames = (): Set<string> => {
+  const out = new Set<string>(DISCOVERY_TOOLS);
+  for (const [name, entry] of registry) {
+    if (entry.handle.enabled) out.add(name);
+  }
+  return out;
+};
+
+function handleFlowTools({
+  query,
+  group,
+  enable,
+  disable,
+}: z.infer<z.ZodObject<typeof flowToolsShape>>): ToolResult {
+  const hasEnable = Boolean(enable && enable.length > 0);
+  const hasDisable = Boolean(disable && disable.length > 0);
+  if (!query && !group && !hasEnable && !hasDisable) {
+    return { content: [{ type: "text", text: formatGroupsOverview(getToolMetas(), getEnabledNames()) }] };
+  }
+
+  const allTargets = new Set<string>([...registry.keys(), ...DISCOVERY_TOOLS]);
+  const allCandidates = [...ALL_GROUP_IDS, ...registry.keys()];
+  const out: Record<string, unknown> = {};
+  const unknownTargets: string[] = [];
+  let changed = false;
+  let handledSomething = false;
+
+  if (hasEnable && enable) {
+    const resolved = resolveTargets(enable, allTargets);
+    const switchedOn: string[] = [];
+    const alreadyOn: string[] = [];
+    const details: { name: string; group: ToolGroupId; title: string; description: string; inputSchema: unknown }[] = [];
+
+    for (const name of resolved.tools) {
+      if ((DISCOVERY_TOOLS as readonly string[]).includes(name)) {
+        alreadyOn.push(name);
+        continue;
+      }
+      const entry = registry.get(name);
+      if (!entry) continue;
+      if (!entry.handle.enabled) {
+        // Mutate enabled directly so a batch emits one tools/list_changed notification instead of one per tool.
+        entry.handle.enabled = true;
+        changed = true;
+        switchedOn.push(name);
+      } else {
+        alreadyOn.push(name);
+      }
+      details.push({
+        name: entry.name,
+        group: TOOL_TO_GROUP.get(entry.name)!,
+        title: entry.title,
+        description: entry.description,
+        inputSchema: toJsonSchema(entry.schema),
+      });
+    }
+
+    if (details.length > 0 || alreadyOn.length > 0) {
+      handledSomething = true;
+      out.note = "If your app does not refresh its tool list automatically, call any of these tools right away through flow_call using the schemas below.";
+      out.enabled = switchedOn;
+      if (alreadyOn.length) out.already_on = alreadyOn;
+      out.tools = details;
+    }
+    for (const u of resolved.unknown) unknownTargets.push(u);
+  }
+
+  if (hasDisable && disable) {
+    const resolved = resolveTargets(disable, allTargets);
+    const switchedOff: string[] = [];
+    const alreadyOff: string[] = [];
+    const keptOn: string[] = [];
+
+    for (const name of resolved.tools) {
+      if (ALWAYS_ON_TOOLS.has(name)) {
+        keptOn.push(name);
+        continue;
+      }
+      const entry = registry.get(name);
+      if (!entry) continue;
+      if (entry.handle.enabled) {
+        entry.handle.enabled = false;
+        changed = true;
+        switchedOff.push(name);
+      } else {
+        alreadyOff.push(name);
+      }
+    }
+
+    if (switchedOff.length > 0 || alreadyOff.length > 0 || keptOn.length > 0) {
+      handledSomething = true;
+      out.disabled = switchedOff;
+      if (alreadyOff.length) out.already_off = alreadyOff;
+      if (keptOn.length) {
+        out.kept_on = keptOn;
+        out.kept_on_note = "core, flow_tools, and flow_call stay on and cannot be disabled.";
+      }
+    }
+    for (const u of resolved.unknown) unknownTargets.push(u);
+  }
+
+  if (changed) {
+    server.sendToolListChanged();
+  }
+
+  if (unknownTargets.length) {
+    const uniqueUnknown = [...new Set(unknownTargets)];
+    out.unknown = uniqueUnknown.map((name) => ({ name, closest: closestNames(name, allCandidates) }));
+  }
+
+  if (group) {
+    const g = GROUP_BY_ID.get(group.trim().toLowerCase() as ToolGroupId);
+    if (!g) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                error: `Unknown group "${group}". Valid groups: ${ALL_GROUP_IDS.join(", ")}.`,
+                closest: closestNames(group, ALL_GROUP_IDS),
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+    handledSomething = true;
+    const enabled = getEnabledNames();
+    const st = groupStatus(g.id, enabled);
+    out.group = {
+      id: g.id,
+      description: g.description,
+      status: st.status,
+      tools: g.tools.map((name) => {
+        const entry = registry.get(name)!;
+        return {
+          name,
+          title: entry.title,
+          enabled: entry.handle.enabled,
+          summary: summarizeDescription(entry.description, 120),
+        };
+      }),
+    };
+  }
+
+  if (query) {
+    handledSomething = true;
+    const matches = searchTools(getToolMetas(), query, getEnabledNames());
+    out.query = query;
+    out.matches = matches;
+    if (matches.length === 0) {
+      out.search_note = "No tools matched all query words. Call flow_tools with no arguments to see all groups.";
+    }
+  }
+
+  if (!handledSomething && unknownTargets.length) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              error: `Unknown tool or group name(s): ${unknownTargets.join(", ")}.`,
+              unknown: out.unknown,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+}
+
+server.registerTool(
+  "flow_tools",
+  {
+    title: "Discover or switch Flow tool groups",
+    description:
+      "List, search, enable, or disable flow-mcp tool groups for this session. Call with no arguments to list all groups (core, images, video, characters, projects, library, sound, film, music) and one-line tool summaries; pass query to search by keyword; pass group to inspect one group; pass enable or disable with group or tool names (core and discovery tools stay on). Enabling returns full descriptions and JSON Schemas so you can also call tools immediately via flow_call.",
+    inputSchema: flowToolsShape,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  (args) => handleFlowTools(args),
+);
+
+server.registerTool(
+  "flow_call",
+  {
+    title: "Run any Flow tool by name",
+    description:
+      "Run any flow-mcp tool by name whether or not it is currently listed, using its normal input validation and handler. Use this only for tools found with flow_tools that your app has not listed yet; call listed tools directly instead.",
+    inputSchema: flowCallShape,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ tool: toolName, arguments: rawArgs }, extra) => {
+    const name = toolName.trim();
+    if (name === "flow_call") {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: "flow_call cannot call itself. Pass another flow-mcp tool name." }, null, 2) }],
+        isError: true,
+      };
+    }
+    if (name === "flow_tools") {
+      const parsed = await z.object(flowToolsShape).safeParseAsync(rawArgs ?? {});
+      if (!parsed.success) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `Invalid arguments for tool ${name}: ${formatZodIssues(parsed.error.issues)}` }, null, 2) }],
+          isError: true,
+        };
+      }
+      return handleFlowTools(parsed.data);
+    }
+    const entry = registry.get(name);
+    if (!entry) {
+      const closest = closestNames(name, [...registry.keys(), "flow_tools"]);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                error: `Unknown tool "${name}". Closest matches: ${closest.join(", ")}.`,
+                closest,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+    const parsed = await entry.schema.safeParseAsync(rawArgs ?? {});
+    if (!parsed.success) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: `Invalid arguments for tool ${name}: ${formatZodIssues(parsed.error.issues)}` }, null, 2) }],
+        isError: true,
+      };
+    }
+    return entry.handler(parsed.data as Record<string, unknown>, extra);
+  },
+);
+
+assertToolGroupCoverage(registry.keys());
+
+const toolsMode = parseToolsMode(process.env.FLOW_MCP_TOOLS);
+if (toolsMode.unknown.length > 0) {
+  process.stderr.write(
+    `[flow-mcp] Unknown FLOW_MCP_TOOLS group(s) ignored: ${toolsMode.unknown.join(", ")}. Valid groups: ${ALL_GROUP_IDS.join(", ")}.\n`,
+  );
+}
+for (const [name, entry] of registry) {
+  const group = TOOL_TO_GROUP.get(name)!;
+  if (!toolsMode.enabledGroups.has(group)) {
+    entry.handle.disable();
+  }
+}
 
 await server.connect(new StdioServerTransport());
