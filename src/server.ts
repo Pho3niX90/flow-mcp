@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -113,6 +113,7 @@ export interface StartServerOptions {
   probeAttempts?: number;
   probeDelayMs?: number;
   onShutdown?: () => void;
+  onServer?: (server: Server) => void;
 }
 
 // Serves the Studio panel and a JSON API on localhost. Returns "client" when another flow-mcp process already
@@ -255,6 +256,7 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
         const signals = process.platform === "win32" ? (["SIGINT", "SIGTERM"] as const) : (["SIGINT", "SIGTERM", "SIGHUP"] as const);
         for (const signal of signals) process.once(signal, () => process.exit(0));
       }
+      opts.onServer?.(server);
       return "owner";
     }
     const holder = await holderOf(port, probeAttempts, probeDelayMs);
