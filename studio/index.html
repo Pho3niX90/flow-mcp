@@ -109,6 +109,22 @@ input:focus,select:focus,textarea:focus{border-color:var(--tally)}
 .pacing{font:700 15px var(--mono);color:var(--warn);margin-bottom:10px}
 .empty{color:var(--dim);font-size:16px}
 .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-top:10px}
+.gal.songs{display:block}
+.fmtrow{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+.fmtrow .check{margin-top:0}
+details.adv{margin-top:14px;padding:10px 12px;border:2px solid var(--line);border-radius:10px;background:var(--ink)}
+details.adv summary{font:700 13px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.08em;cursor:pointer;list-style:none}
+details.adv summary::-webkit-details-marker{display:none}
+details.adv summary::before{content:"▸ ";color:var(--tally)}
+details.adv[open] summary::before{content:"▾ "}
+.mstat{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
+.mstat .pills{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:700 15px var(--mono)}
+.songrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
+.songrow:last-child{border-bottom:0}
+.songrow .meta{flex:1;min-width:0}
+.songrow b{display:block;font:700 16px var(--body);color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.songrow small{display:block;font:600 13px var(--mono);color:var(--dim);margin-top:2px}
+.songrow p{color:var(--dim);font-size:14px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gal figure{margin:0;border-radius:10px;overflow:hidden;background:#000;border:2px solid var(--line);cursor:pointer}
 .gal figure:hover{border-color:var(--tally)}
 .gal video,.gal img{display:block;width:100%;aspect-ratio:1;object-fit:cover}
@@ -187,6 +203,7 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
     <button data-tab="frames">Frames<small>still images</small></button>
     <button data-tab="shots">Shots<small>video clips</small></button>
     <button data-tab="narrate">Voice<small>narration</small></button>
+    <button data-tab="music">Music<small>songs</small></button>
     <button data-tab="restyle">Restyle<small>edit a clip</small></button>
     <button data-tab="cut">Cut<small>assemble film</small></button>
     <button data-tab="captions">Captions<small>words on screen</small></button>
@@ -312,6 +329,79 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
         </div>
         <h2 style="margin-top:18px">Your narrations <small>saved on <span data-place="computer">this Mac</span></small></h2>
         <div class="card"><div id="n_takes"><p class="empty">No narrations saved yet.</p></div></div>
+      </section>
+
+      <!-- MUSIC -->
+      <section class="panel" data-panel="music">
+        <div class="step">Optional</div>
+        <h2>Music <small>Flow Music</small></h2>
+        <p class="lede">Make original songs in Google Flow Music (1 to 3 minutes, instrumental or with lyrics). Flow Music runs in its own Chrome window on its own queue lane, so songs do not wait behind videos.</p>
+        <div class="card" id="m_account" style="margin-bottom:12px">
+          <div class="mstat">
+            <div class="pills" id="m_status"><span class="pill"><i class="tally"></i>Not checked yet</span></div>
+            <button type="button" class="btn small ghost" id="m_recheck">Check again</button>
+          </div>
+          <div id="m_accountHint"></div>
+        </div>
+        <div class="card">
+          <label class="f" for="m_project">Project folder</label><input type="text" id="m_project" placeholder="MyFilm">
+          <label class="f" for="m_sound">Sound <span id="m_soundCount" style="text-transform:none;letter-spacing:0"></span></label>
+          <textarea id="m_sound" maxlength="3000" style="min-height:100px" placeholder="Warm lo-fi jazz beat, dusty electric piano, vinyl crackle, soft upright bass, relaxed late-night feel"></textarea>
+          <label class="check"><input type="checkbox" id="m_instrumental" checked>Instrumental (no vocals)</label>
+          <div id="m_lyricsWrap" hidden>
+            <label class="f" for="m_lyrics">Lyrics <span id="m_lyricsCount" style="text-transform:none;letter-spacing:0"></span></label>
+            <textarea id="m_lyrics" maxlength="3000" style="min-height:110px" placeholder="[Verse 1]&#10;Rain on the window, streetlights turning gold…"></textarea>
+          </div>
+          <label class="f" for="m_title">Title (optional) <span id="m_titleCount" style="text-transform:none;letter-spacing:0"></span></label>
+          <input type="text" id="m_title" maxlength="100" placeholder="Midnight Groove">
+          <div class="grid2">
+            <div>
+              <label class="f">Length</label>
+              <div class="seg" data-seg="m_lengthMode"></div>
+              <div id="m_lengthWrap" hidden>
+                <label class="f" for="m_length">Duration <span id="m_lengthOut" style="text-transform:none;letter-spacing:0"></span></label>
+                <input type="range" id="m_length" min="60" max="180" step="5" value="90">
+              </div>
+            </div>
+            <div>
+              <label class="f">Tempo</label>
+              <div class="seg" data-seg="m_bpmMode"></div>
+              <div id="m_bpmWrap" hidden>
+                <label class="f" for="m_bpm">Beats per minute (20–400)</label>
+                <input type="number" id="m_bpm" min="20" max="400" step="1" value="96">
+              </div>
+            </div>
+          </div>
+          <details class="adv" id="m_advanced">
+            <summary>Advanced</summary>
+            <div class="grid2">
+              <div><label class="f" for="m_seed">Seed (optional, digits)</label><input type="text" id="m_seed" inputmode="numeric" spellcheck="false" placeholder="e.g. 12345"></div>
+              <div>
+                <label class="f" for="m_model">Model</label>
+                <select id="m_model">
+                  <option value="">Default</option>
+                  <option value="Lyria 3.5">Lyria 3.5</option>
+                  <option value="Lyria 3 Pro">Lyria 3 Pro</option>
+                </select>
+              </div>
+            </div>
+          </details>
+          <label class="f">Save as</label>
+          <div class="fmtrow">
+            <label class="check"><input type="checkbox" id="m_fmt_m4a" value="m4a" checked>M4A</label>
+            <label class="check"><input type="checkbox" id="m_fmt_mp3" value="mp3">MP3</label>
+            <label class="check"><input type="checkbox" id="m_fmt_wav" value="wav">WAV</label>
+          </div>
+          <p class="empty" style="margin-top:6px">MP3 is made on <span data-place="computer">this Mac</span> and needs FFmpeg.</p>
+          <div class="phrase" id="m_costNote">A song costs <b>5 Flow Music credits</b>. Flow Music shows no price beforehand, so the credit limit is checked here automatically.</div>
+          <div class="rowbtns"><button type="button" class="btn" id="m_go">Make song</button></div>
+          <p class="empty" id="m_info" style="margin-top:10px"></p>
+        </div>
+        <h2 style="margin-top:18px">In your Flow Music library</h2>
+        <div class="card">
+          <div class="rowbtns" style="margin-top:0"><button type="button" class="btn small" id="m_libLoad">Show my songs</button></div>
+          <div id="m_lib" style="margin-top:10px"><p class="empty">Press “Show my songs” to load your Flow Music library.</p></div>
+        </div>
       </section>
 
       <!-- RESTYLE -->
@@ -461,13 +551,24 @@ const DEFAULTS = {
   frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", scenes: [blank()] },
   shots: { project: "MyFilm", model: "Omni 1.2 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 25, scenes: [blank()] },
   narrate: { project: "MyFilm", engine: "kokoro", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
+  music: { project: "MyFilm", sound: "", instrumental: true, lyrics: "", title: "", lengthAuto: true, length: 90, bpmAuto: true, bpm: 96, seed: "", model: "", formats: ["m4a"] },
   cut: { project: "MyFilm", music: null, voiceover: null, hold: true, clips: [] },
   captions: { video: null, style: "bold", position: "bottom", size: 100, colors: {}, text: "" },
 };
-const S = Object.assign(structuredClone(DEFAULTS), JSON.parse(localStorage.getItem("flow-studio-v2") || "{}"));
-const save = () => localStorage.setItem("flow-studio-v2", JSON.stringify(S));
+const S = (() => {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem("flow-studio-v2") || "{}"); } catch {}
+  const merged = Object.assign(structuredClone(DEFAULTS), stored);
+  merged.music = Object.assign(structuredClone(DEFAULTS.music), merged.music || {});
+  if (!Array.isArray(merged.music.formats) || !merged.music.formats.length) merged.music.formats = ["m4a"];
+  return merged;
+})();
+const save = () => { try { localStorage.setItem("flow-studio-v2", JSON.stringify(S)); } catch {} };
 if (!["kokoro", "gemini"].includes(S.narrate.engine)) S.narrate.engine = "kokoro"; // the computer-voice engine is gone
-let TECH = [], VOICES = { kokoro: [], gemini: [] }, CAST = [], LIB = [], GAL = [], castImage = null, pickTarget = null, busy = false;
+let TECH = [], VOICES = { kokoro: [], gemini: [] }, CAST = [], LIB = [], GAL = [], MUSIC_LIB = [], castImage = null, pickTarget = null, busy = false;
+const isSongFile = (f) => f.kind === "audio" && /^song-/i.test(f.name);
+const isNarrationFile = (f) => f.kind === "audio" && !/^song-/i.test(f.name);
+const fmtSecs = (s) => { if (typeof s !== "number" || !Number.isFinite(s)) return ""; const t = Math.max(0, Math.round(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 
 /* ---------- tabs ---------- */
 function showTab(name) {
@@ -479,7 +580,8 @@ function showTab(name) {
   $("#galCard").hidden = !GALLERY_KINDS[name];
   if (name === "captions" && LIVE && S.captions.video && capFor !== S.captions.video.path) capListen();
   else if (name === "captions" && LIVE) capReady();
-  if (GAL.length) renderGallery();
+  if (name === "music" && LIVE) loadMusicStatus();
+  renderGallery();
   estimate();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -503,6 +605,8 @@ const SEGS = {
   cap_pos: { get: () => (typeof S.captions.position === "string" ? S.captions.position : ""), set: (v) => { S.captions.position = v; capPreviewSoon(); }, opts: ["bottom", "middle", "top"], labels: { bottom: "Bottom", middle: "Middle", top: "Top" } },
   cap_letters: { get: () => capLetters(S.captions.style), set: (v) => { (S.captions.letters ??= {})[S.captions.style] = v; capPreviewSoon(); }, opts: ["as_said", "capitals", "lowercase"], labels: { as_said: "Normal", capitals: "CAPS", lowercase: "lower" } },
   n_engine: { get: () => S.narrate.engine, set: (v) => (S.narrate.engine = v), opts: ["kokoro", "gemini"], labels: { kokoro: "Kokoro", gemini: "Google AI Studio" } },
+  m_lengthMode: { get: () => (S.music.lengthAuto ? "auto" : "custom"), set: (v) => (S.music.lengthAuto = v === "auto"), opts: ["auto", "custom"], labels: { auto: "Auto", custom: "Set length" } },
+  m_bpmMode: { get: () => (S.music.bpmAuto ? "auto" : "custom"), set: (v) => (S.music.bpmAuto = v === "auto"), opts: ["auto", "custom"], labels: { auto: "Auto", custom: "Set BPM" } },
 };
 function renderSegs() {
   for (const [key, cfg] of Object.entries(SEGS)) {
@@ -522,9 +626,10 @@ document.addEventListener("click", (e) => {
 function slotHtml(kind, i, val, label) {
   const name = val ? (val.asset ?? val.name) : "";
   const pic = val?.path && /\.(jpe?g|png|webp|gif)$/i.test(val.path);
+  const pickLabel = kind === "music" ? "My songs" : kind === "voiceover" ? "My narrations" : "From Flow";
   return `<div class="slot" data-slot="${kind}" data-i="${i}">${pic ? `<img src="${media(val.path)}">` : ""}
     ${val ? `<button class="x" data-clear="${kind}" data-i="${i}">×</button><span class="tag">${esc(name)}</span>`
-          : `<span>${label}</span><span class="two"><button type="button" data-src="upload">Upload</button><button type="button" data-src="flow">${/music|voiceover/.test(kind) ? "My narrations" : "From Flow"}</button></span>`}</div>`;
+          : `<span>${label}</span><span class="two"><button type="button" data-src="upload">Upload</button><button type="button" data-src="flow">${pickLabel}</button></span>`}</div>`;
 }
 function setSlot(kind, idx, val) {
   if (kind === "capvideo") return void setCapVideo(val);
@@ -542,7 +647,7 @@ document.addEventListener("click", (e) => {
   if (slot && src) {
     pickTarget = { kind: slot.dataset.slot, i: slot.dataset.i };
     const audio = /music|voiceover/.test(slot.dataset.slot);
-    if (src.dataset.src === "flow") openPicker(audio);
+    if (src.dataset.src === "flow") openPicker(slot.dataset.slot === "music" ? "songs" : slot.dataset.slot === "voiceover" ? "narrations" : "flow");
     else { $("#file").accept = audio ? "audio/*" : "image/*"; $("#file").click(); }
   }
 });
@@ -554,15 +659,18 @@ $("#file").addEventListener("change", async (e) => {
     setSlot(pickTarget.kind, pickTarget.i, { path: data.path, name: f.name });
   } catch (err) { toast(err.message, true); }
 });
-async function openPicker(audioOnly) {
+async function openPicker(mode) {
   $("#picker h2").textContent = "Pick from Flow"; $("#picker p.empty").textContent = "Media already in the open Flow project.";
   $("#pickList").innerHTML = `<p class="empty">Reading your Flow project…</p>`; picker.showModal();
-  if (audioOnly) {
-    $("#picker h2").textContent = "Pick a narration"; $("#picker p.empty").textContent = `Narrations saved on ${PLACE.computer}. To use music, upload it instead.`;
+  if (mode === "songs" || mode === "narrations") {
+    const songs = mode === "songs";
+    $("#picker h2").textContent = songs ? "Pick a song" : "Pick a narration";
+    $("#picker p.empty").textContent = songs ? `Songs saved on ${PLACE.computer} (newest first).` : `Narrations saved on ${PLACE.computer}.`;
     try {
       const { projects } = await api("outputs");
-      const takes = projects.flatMap((p) => p.files.filter((f) => f.kind === "audio").map((f) => ({ path: f.path, name: `${p.name} / ${f.name}`, mtime: f.mtime }))).sort((a, b) => b.mtime - a.mtime);
-      $("#pickList").innerHTML = takes.map((t) => `<button data-audio="${esc(t.path)}" data-name="${esc(t.name)}"><span>${esc(t.name)}</span><em>audio</em></button>`).join("") || `<p class="empty">No narrations saved yet — record one in the Voice tab.</p>`;
+      const filter = songs ? isSongFile : isNarrationFile;
+      const takes = projects.flatMap((p) => p.files.filter(filter).map((f) => ({ path: f.path, name: `${p.name} / ${f.name}`, mtime: f.mtime }))).sort((a, b) => b.mtime - a.mtime);
+      $("#pickList").innerHTML = takes.map((t) => `<button data-audio="${esc(t.path)}" data-name="${esc(t.name)}"><span>${esc(t.name)}</span><em>${songs ? "song" : "audio"}</em></button>`).join("") || `<p class="empty">${songs ? "No songs saved yet — make or download one in the Music tab." : "No narrations saved yet — record one in the Voice tab."}</p>`;
     } catch (err) { $("#pickList").innerHTML = `<p class="empty" style="color:var(--bad)">${esc(err.message)}</p>`; }
     return;
   }
@@ -751,6 +859,197 @@ $("#n_out").addEventListener("click", (e) => {
   const u = e.target.closest("[data-usevo]"); if (!u) return;
   S.cut.voiceover = { path: u.dataset.usevo, name: u.dataset.usevo.split(/[\\/]/).pop() };
   save(); renderAll(); showTab("cut"); toast("Narration loaded into Cut");
+});
+
+/* ---------- music ---------- */
+const MUSIC_PILLS_KEY = "flow-studio-music-pills-v1";
+function readSavedMusicPills() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MUSIC_PILLS_KEY) || "null");
+    if (!raw || typeof raw !== "object") return {};
+    return {
+      plan: typeof raw.plan === "string" && raw.plan ? raw.plan : undefined,
+      credits: typeof raw.credits === "number" && Number.isFinite(raw.credits) ? raw.credits : undefined,
+    };
+  } catch { return {}; }
+}
+function saveMusicPills(plan, credits) {
+  try { localStorage.setItem(MUSIC_PILLS_KEY, JSON.stringify({ plan, credits })); } catch {}
+}
+const savedMusicPills = readSavedMusicPills();
+let musicStatusBusy = false, musicStatusLoaded = false;
+
+function renderMusicStatus(st) {
+  const m = st?.music ?? {};
+  if (m.error) {
+    $("#m_status").innerHTML = `<span class="pill"><i class="tally down"></i>Unavailable</span>`;
+    $("#m_accountHint").innerHTML = `<div class="hint">${esc(m.error)}</div>`;
+    return;
+  }
+  if (!m.signedIn) {
+    $("#m_status").innerHTML = `<span class="pill"><i class="tally down"></i>Not signed in</span>`;
+    $("#m_accountHint").innerHTML = `<div class="hint">Flow Music's own Chrome window is open. Sign in there with Google, then press <b>Check again</b>.</div>`;
+    return;
+  }
+  let changed = false;
+  if (m.credits_remaining !== undefined) { renderMusicStatus.credits = m.credits_remaining; renderMusicStatus.creditsLive = true; changed = true; }
+  if (m.plan) { renderMusicStatus.plan = m.plan; renderMusicStatus.planLive = true; changed = true; }
+  if (changed) saveMusicPills(renderMusicStatus.plan ?? savedMusicPills.plan, renderMusicStatus.credits ?? savedMusicPills.credits);
+  const plan = renderMusicStatus.plan ?? savedMusicPills.plan;
+  const planCached = !renderMusicStatus.planLive && plan !== undefined;
+  const credits = renderMusicStatus.credits !== undefined ? renderMusicStatus.credits : savedMusicPills.credits;
+  const creditsCached = !renderMusicStatus.creditsLive && credits !== undefined;
+  const busyNow = Boolean(st?.lane?.busy);
+  const cls = busyNow ? "rolling" : "ready";
+  const label = busyNow ? "Working" : "Ready";
+  $("#m_status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${label}</span>`
+    + (plan ? `<span class="pill${planCached ? " cached" : ""}">${esc(plan)}${planCached ? " (last known)" : ""}</span>` : "")
+    + (credits !== undefined ? `<span class="pill${creditsCached ? " cached" : ""}">${credits.toLocaleString()} credits${creditsCached ? " (last known)" : ""}</span>` : "");
+  $("#m_accountHint").innerHTML = st?.lane?.pacing ? `<div class="pacing">⏱ ${esc(st.lane.pacing)}</div>` : "";
+}
+
+async function loadMusicStatus() {
+  if (!LIVE || musicStatusBusy) return;
+  musicStatusBusy = true;
+  const b = $("#m_recheck");
+  if (b) { b.disabled = true; b.textContent = "Checking…"; }
+  try {
+    renderMusicStatus(await api("music_status"));
+    musicStatusLoaded = true;
+  } catch (err) {
+    $("#m_status").innerHTML = `<span class="pill"><i class="tally down"></i>Check failed</span>`;
+    $("#m_accountHint").innerHTML = `<div class="hint">${esc(err.message)}</div>`;
+  }
+  musicStatusBusy = false;
+  if (b) { b.disabled = false; b.textContent = "Check again"; }
+}
+$("#m_recheck").onclick = () => { if (guard()) loadMusicStatus(); };
+
+function updateMusicCounts() {
+  $("#m_soundCount").textContent = `${S.music.sound.length} / 3000`;
+  $("#m_lyricsCount").textContent = `${S.music.lyrics.length} / 3000`;
+  $("#m_titleCount").textContent = S.music.title ? `${S.music.title.length} / 100` : "";
+}
+function renderMusic() {
+  const m = S.music;
+  if ($("#m_sound").value !== m.sound) $("#m_sound").value = m.sound;
+  $("#m_instrumental").checked = Boolean(m.instrumental);
+  $("#m_lyricsWrap").hidden = Boolean(m.instrumental);
+  if ($("#m_lyrics").value !== m.lyrics) $("#m_lyrics").value = m.lyrics;
+  if ($("#m_title").value !== m.title) $("#m_title").value = m.title;
+  $("#m_lengthWrap").hidden = Boolean(m.lengthAuto);
+  $("#m_length").value = m.length ?? 90;
+  $("#m_lengthOut").textContent = fmtSecs(Number($("#m_length").value));
+  $("#m_bpmWrap").hidden = Boolean(m.bpmAuto);
+  if ($("#m_bpm").value !== String(m.bpm ?? 96)) $("#m_bpm").value = String(m.bpm ?? 96);
+  if ($("#m_seed").value !== (m.seed ?? "")) $("#m_seed").value = m.seed ?? "";
+  $("#m_model").value = m.model ?? "";
+  const fmts = Array.isArray(m.formats) && m.formats.length ? m.formats : ["m4a"];
+  $("#m_fmt_m4a").checked = fmts.includes("m4a");
+  $("#m_fmt_mp3").checked = fmts.includes("mp3");
+  $("#m_fmt_wav").checked = fmts.includes("wav");
+  updateMusicCounts();
+}
+$("#m_sound").addEventListener("input", () => { S.music.sound = $("#m_sound").value; save(); updateMusicCounts(); });
+$("#m_instrumental").addEventListener("change", () => { S.music.instrumental = $("#m_instrumental").checked; $("#m_lyricsWrap").hidden = S.music.instrumental; save(); });
+$("#m_lyrics").addEventListener("input", () => { S.music.lyrics = $("#m_lyrics").value; save(); updateMusicCounts(); });
+$("#m_title").addEventListener("input", () => { S.music.title = $("#m_title").value; save(); updateMusicCounts(); });
+$("#m_length").addEventListener("input", () => { S.music.length = +$("#m_length").value; $("#m_lengthOut").textContent = fmtSecs(S.music.length); save(); });
+$("#m_bpm").addEventListener("input", () => { S.music.bpm = $("#m_bpm").value; save(); });
+$("#m_seed").addEventListener("input", () => { S.music.seed = $("#m_seed").value; save(); });
+$("#m_model").addEventListener("change", () => { S.music.model = $("#m_model").value; save(); });
+for (const fmt of ["m4a", "mp3", "wav"]) {
+  $(`#m_fmt_${fmt}`).addEventListener("change", (e) => {
+    const picked = ["m4a", "mp3", "wav"].filter((f) => $(`#m_fmt_${f}`).checked);
+    if (!picked.length) { e.target.checked = true; toast("Pick at least one format.", true); return; }
+    S.music.formats = picked;
+    save();
+  });
+}
+
+$("#m_go").onclick = async () => {
+  if (!guard()) return;
+  const sound = $("#m_sound").value.trim();
+  if (!sound) return toast("Describe the sound first.", true);
+  const project = $("#m_project").value.trim() || S.music.project || "MyFilm";
+  const formats = ["m4a", "mp3", "wav"].filter((f) => $(`#m_fmt_${f}`).checked);
+  if (!formats.length) return toast("Pick at least one format.", true);
+  const instrumental = $("#m_instrumental").checked;
+  const lyrics = instrumental ? "" : $("#m_lyrics").value.trim();
+  const title = $("#m_title").value.trim();
+  const song = { sound, instrumental, formats };
+  if (lyrics) song.lyrics = lyrics;
+  if (title) song.title = title;
+  if (!S.music.lengthAuto) song.length_seconds = Number($("#m_length").value);
+  if (!S.music.bpmAuto) {
+    const rawBpm = $("#m_bpm").value.trim();
+    const bpm = Number(rawBpm);
+    if (!rawBpm || !Number.isInteger(bpm) || bpm < 20 || bpm > 400) return toast("Tempo must be a whole number from 20 to 400 BPM.", true);
+    song.bpm = bpm;
+  }
+  const seed = $("#m_seed").value.trim();
+  if (seed) {
+    if (!/^\d+$/.test(seed)) return toast("Seed must be digits only.", true);
+    song.seed = seed;
+  }
+  const model = $("#m_model").value.trim();
+  if (model) song.model = model;
+  const b = $("#m_go"); b.disabled = true; b.textContent = "Queueing…";
+  try {
+    await api("music", { project, songs: [song] });
+    $("#m_info").textContent = "Queued — watch the Monitor.";
+    toast("Song queued.");
+    poll();
+  } catch (err) {
+    $("#m_info").textContent = err.message;
+    toast(err.message, true);
+  }
+  b.disabled = false; b.textContent = "Make song";
+};
+
+function fmtMusicDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+function renderMusicLib() {
+  $("#m_lib").innerHTML = MUSIC_LIB.length
+    ? MUSIC_LIB.map((s) => {
+        const meta = [fmtSecs(s.seconds), fmtMusicDate(s.created)].filter(Boolean).join(" · ");
+        return `<div class="songrow"><div class="meta"><b>${esc(s.title || "Untitled song")}</b><small>${esc(meta || s.id)}</small></div><button type="button" class="btn small ghost" data-musicdl="${esc(s.id)}">Download</button></div>`;
+      }).join("")
+    : `<p class="empty">No songs found in your Flow Music library.</p>`;
+}
+$("#m_libLoad").onclick = async () => {
+  if (!guard()) return;
+  const b = $("#m_libLoad"); b.disabled = true; b.textContent = "Reading…";
+  try {
+    const out = await api("music_songs", { limit: 20 });
+    MUSIC_LIB = Array.isArray(out?.songs) ? out.songs : [];
+    renderMusicLib();
+    b.textContent = "Refresh my songs";
+  } catch (err) {
+    $("#m_lib").innerHTML = `<p class="empty" style="color:var(--bad)">${esc(err.message)}</p>`;
+    toast(err.message, true);
+    b.textContent = "Show my songs";
+  }
+  b.disabled = false;
+};
+$("#m_lib").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-musicdl]"); if (!b || !guard()) return;
+  const project = $("#m_project").value.trim() || S.music.project || "MyFilm";
+  const formats = ["m4a", "mp3", "wav"].filter((f) => $(`#m_fmt_${f}`).checked);
+  if (!formats.length) return toast("Pick at least one format.", true);
+  b.disabled = true; b.textContent = "Downloading…";
+  try {
+    const out = await api("music_download", { project, songs: [b.dataset.musicdl], formats });
+    toast(`Saved ${out.files?.length ?? 1} file(s) to ${project}`);
+    loadGallery(slateFolder());
+  } catch (err) {
+    toast(err.message, true);
+  }
+  b.disabled = false; b.textContent = "Download";
 });
 
 /* ---------- restyle ---------- */
@@ -1073,8 +1372,8 @@ function estimate() {
     btn.disabled = busy || !ready.length;
   } else {
     const narrateCost = "Free";
-    $("#estNum").textContent = { cast: "Free", narrate: narrateCost, restyle: "≈ 20 credits", cut: "Free", library: "Free" }[tab] ?? "";
-    $("#estSub").textContent = { cast: "characters cost nothing", narrate: S.narrate.engine === "gemini" ? "Google AI Studio, free" : `Kokoro, on ${PLACE.computer}`, restyle: "use Restyle clip", cut: "use Assemble film", library: "downloads cost nothing" }[tab] ?? "";
+    $("#estNum").textContent = { cast: "Free", narrate: narrateCost, music: "5 credits", restyle: "≈ 20 credits", cut: "Free", library: "Free" }[tab] ?? "";
+    $("#estSub").textContent = { cast: "characters cost nothing", narrate: S.narrate.engine === "gemini" ? "Google AI Studio, free" : `Kokoro, on ${PLACE.computer}`, music: "per song · use Make song", restyle: "use Restyle clip", cut: "use Assemble film", library: "downloads cost nothing" }[tab] ?? "";
     btn.disabled = true;
   }
 }
@@ -1115,7 +1414,7 @@ async function loadGallery(prefer) {
   renderGallery(); renderTakes();
 }
 // Which saved files each tab's gallery shows. Shots uses stills as first and last frames as well as clips.
-const GALLERY_KINDS = { cast: ["image"], frames: ["image"], shots: ["video", "image"], restyle: ["video"], cut: ["video"], captions: ["video"] };
+const GALLERY_KINDS = { cast: ["image"], frames: ["image"], shots: ["video", "image"], music: ["audio"], restyle: ["video"], cut: ["video"], captions: ["video"] };
 // How to name this computer and its bin. Starts with the Mac wording and is replaced by what the server reports, so a
 // PC says "this PC" and "the Recycle Bin".
 let PLACE = { computer: "this Mac", bin: "the Mac's Trash", binShort: "Mac Trash", platform: "darwin" };
@@ -1125,7 +1424,7 @@ function applyPlace(p) {
   $$("[data-place]").forEach((el) => { const v = PLACE[el.dataset.place]; if (v) el.textContent = v; });
 }
 function renderTakes() {
-  const takes = GAL.flatMap((p) => p.files.filter((f) => f.kind === "audio").map((f) => ({ ...f, project: p.name }))).sort((a, b) => b.mtime - a.mtime);
+  const takes = GAL.flatMap((p) => p.files.filter(isNarrationFile).map((f) => ({ ...f, project: p.name }))).sort((a, b) => b.mtime - a.mtime);
   $("#n_takes").innerHTML = takes.length
     ? takes.map((t) => `<div class="take"><div style="min-width:0"><b>${esc(t.name)}</b><small>${esc(t.project)}</small></div><button type="button" class="btn small ghost" data-taketrash="${esc(t.path)}" style="border-color:var(--bad);color:var(--bad)">Move to ${PLACE.binShort}</button><audio controls preload="none" src="${media(t.path)}"></audio></div>`).join("")
     : `<p class="empty">No narrations saved yet.</p>`;
@@ -1137,11 +1436,26 @@ $("#n_takes").addEventListener("click", async (e) => {
 function renderGallery() {
   const p = GAL.find((x) => x.name === $("#galProject").value);
   $("#galInfo").textContent = p ? p.dir : `Finished work is saved on ${PLACE.computer} and listed here.`;
+  const gal = $("#gal");
+  const isMusic = S.tab === "music";
+  gal.classList.toggle("songs", isMusic);
+  if (isMusic) {
+    const songs = (p?.files ?? []).filter(isSongFile).sort((a, b) => b.mtime - a.mtime);
+    gal.innerHTML = songs.length
+      ? songs.map((f) => `<div class="take"><div style="min-width:0"><b>${esc(f.name)}</b></div><button type="button" class="btn small ghost" data-songtrash="${esc(f.path)}" style="border-color:var(--bad);color:var(--bad)">Move to ${PLACE.binShort}</button><audio controls preload="none" src="${media(f.path)}"></audio></div>`).join("")
+      : `<p class="empty">No songs saved in this folder yet.</p>`;
+    return;
+  }
   const want = GALLERY_KINDS[S.tab] ?? ["image", "video"];
-  $("#gal").innerHTML = (p?.files ?? []).map((f, n) => !want.includes(f.kind) ? "" : `<figure data-n="${n}">${f.kind === "video" ? `<video muted playsinline preload="metadata" src="${media(f.path)}#t=0.1"></video>` : `<img loading="lazy" src="${media(f.path)}">`}<figcaption>${esc(f.name)}</figcaption></figure>`).join("");
+  gal.innerHTML = (p?.files ?? []).map((f, n) => !want.includes(f.kind) ? "" : `<figure data-n="${n}">${f.kind === "video" ? `<video muted playsinline preload="metadata" src="${media(f.path)}#t=0.1"></video>` : `<img loading="lazy" src="${media(f.path)}">`}<figcaption>${esc(f.name)}</figcaption></figure>`).join("");
 }
 $("#galProject").onchange = renderGallery;
-$("#gal").addEventListener("click", (e) => {
+$("#gal").addEventListener("click", async (e) => {
+  const trash = e.target.closest("[data-songtrash]");
+  if (trash) {
+    if (await discardLocal(trash.dataset.songtrash, `"${trash.dataset.songtrash.split(/[\\/]/).pop()}"`)) loadGallery();
+    return;
+  }
   const fig = e.target.closest("figure"); if (!fig) return;
   const f = GAL.find((x) => x.name === $("#galProject").value).files[+fig.dataset.n];
   $("#viewerBody").innerHTML = f.kind === "video" ? `<video controls autoplay playsinline src="${media(f.path)}"></video>` : `<img src="${media(f.path)}">`;
@@ -1199,35 +1513,39 @@ function renderStatus(st) {
   $("#hint").innerHTML = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
   $("#pacing").innerHTML = st.pacing ? `<div class="pacing">⏱ ${esc(st.pacing)}</div>` : "";
   const jobs = [...st.jobs].reverse();
-  const sig = JSON.stringify(jobs.map((j) => [j.id, j.status, j.progress, j.files.length, j.credits, j.attempts, j.failed_scenes?.length ?? 0]));
+  const sig = JSON.stringify(jobs.map((j) => [j.id, j.status, j.progress, j.files.length, j.credits, j.attempts, j.failed_scenes?.length ?? 0, j.note ?? "", j.error ?? "", Boolean(j.outcome_unknown)]));
   if (sig !== renderStatus.sig) {
     if (renderStatus.sig && LIVE) loadGallery(slateFolder());
     renderStatus.sig = sig;
     $("#jobs").innerHTML = jobs.map((j) => `<div class="job"><div class="top"><span class="name">${esc((j.project || "").split(/[\\/]/).pop())} · ${esc(j.scene)}</span>
-      <span class="badge ${j.status}">${j.status}${j.progress ? " " + esc(j.progress) : ""}</span>${j.credits !== undefined ? `<span class="badge">${j.credits} cr</span>` : ""}${j.attempts > 1 ? `<span class="badge">try ${j.attempts}</span>` : ""}
-      ${j.status === "queued" ? `<button class="btn small ghost" data-cancel="${j.id}">Cancel</button>` : ""}${/failed|cancelled/.test(j.status) ? `<button class="btn small" data-retry="${j.id}">Retry</button>` : ""}${j.status === "done" && j.failed_scenes?.length ? `<button class="btn small" data-retry="${j.id}">Retry ${j.failed_scenes.length} failed image${j.failed_scenes.length > 1 ? "s" : ""}</button>` : ""}</div>
+      ${j.lane === "music" ? `<span class="badge">music</span>` : ""}<span class="badge ${j.status}">${j.status}${j.progress ? " " + esc(j.progress) : ""}</span>${j.credits !== undefined ? `<span class="badge">${j.credits} cr</span>` : ""}${j.attempts > 1 ? `<span class="badge">try ${j.attempts}</span>` : ""}
+      ${j.status === "queued" ? `<button class="btn small ghost" data-cancel="${j.id}">Cancel</button>` : ""}${/failed|cancelled/.test(j.status) && !j.outcome_unknown ? `<button class="btn small" data-retry="${j.id}">Retry</button>` : ""}${j.status === "done" && j.failed_scenes?.length ? `<button class="btn small" data-retry="${j.id}">Retry ${j.failed_scenes.length} failed image${j.failed_scenes.length > 1 ? "s" : ""}</button>` : ""}</div>
       ${j.status === "running" ? `<div class="meter"><i style="width:${parseInt(j.progress) || 4}%"></i></div>` : ""}
       <p>${esc(j.prompt)}</p>${j.note ? `<p style="color:var(--warn)">${esc(j.note)}</p>` : ""}${j.error ? `<p class="err">${esc(j.error)}</p>` : ""}
       ${j.files.map((p) => (/\.(mp4|webm|mov)$/i.test(p) ? `<video controls playsinline preload="metadata" src="${media(p)}"></video>` : /\.(m4a|mp3|wav)$/i.test(p) ? `<audio controls src="${media(p)}"></audio>` : `<img class="out" src="${media(p)}">`)).join("")}</div>`).join("") || `<p class="empty">Nothing queued yet.</p>`;
   }
   estimate();
-  return active;
+  return { active, musicActive: st.jobs.some((j) => j.lane === "music" && (j.status === "running" || j.status === "queued")) };
 }
-let timer, wasActive = false;
+let timer, wasActive = false, wasMusicActive = false;
 async function poll(detailed = false) {
   clearTimeout(timer);
   try {
-    const active = renderStatus(await api("status", { detailed }));
+    const { active, musicActive } = renderStatus(await api("status", { detailed }));
+    const musicFinished = wasMusicActive && !musicActive;
+    wasMusicActive = musicActive;
+    if (musicFinished && (musicStatusLoaded || S.tab === "music")) loadMusicStatus();
     if (wasActive && !active) { wasActive = false; loadGallery(slateFolder()); return poll(true); }
+    if (musicFinished) loadGallery(slateFolder());
     wasActive = active; timer = setTimeout(poll, active ? 3000 : 20000);
   } catch { $("#status").innerHTML = `<span class="pill"><i class="tally down"></i>Server offline</span>`; timer = setTimeout(poll, 5000); }
 }
 
 /* ---------- boot ---------- */
 function renderAll() {
-  for (const [id, val] of [["f_project", S.frames.project], ["s_project", S.shots.project], ["n_project", S.narrate.project], ["c_project", S.cut.project], ["e_project", S.cut.project], ["l_project", S.cut.project]]) if ($("#" + id) && !$("#" + id).value) $("#" + id).value = val;
+  for (const [id, val] of [["f_project", S.frames.project], ["s_project", S.shots.project], ["n_project", S.narrate.project], ["m_project", S.music.project], ["c_project", S.cut.project], ["e_project", S.cut.project], ["l_project", S.cut.project]]) if ($("#" + id) && !$("#" + id).value) $("#" + id).value = val;
   $("#s_model").innerHTML = Object.keys(VIDEO_COST).map((m) => `<option ${m === S.shots.model ? "selected" : ""}>${m}</option>`).join("");
-  renderSegs(); renderScenes(); renderCast(); renderNarrate();
+  renderSegs(); renderScenes(); renderCast(); renderNarrate(); renderMusic();
   const mus = $('[data-slot="music"]'), vo = $('[data-slot="voiceover"]');
   if (mus) mus.outerHTML = slotHtml("music", 0, S.cut.music, "Music track");
   if (vo) vo.outerHTML = slotHtml("voiceover", 0, S.cut.voiceover, "Narration");
@@ -1243,7 +1561,7 @@ $("#s_model").addEventListener("change", (e) => {
   if (!opts.includes(S.shots.duration)) S.shots.duration = opts.reduce((a, b) => (Math.abs(b - S.shots.duration) < Math.abs(a - S.shots.duration) ? b : a));
   save(); renderAll();
 });
-for (const [id, path] of [["f_project", "frames"], ["s_project", "shots"], ["n_project", "narrate"], ["c_project", "cut"]])
+for (const [id, path] of [["f_project", "frames"], ["s_project", "shots"], ["n_project", "narrate"], ["m_project", "music"], ["c_project", "cut"]])
   $("#" + id).addEventListener("input", (e) => { S[path].project = e.target.value; save(); });
 (async () => {
   if (!LIVE) {
