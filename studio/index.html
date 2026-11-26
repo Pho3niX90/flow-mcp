@@ -28,8 +28,16 @@ header{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;justify-cont
 h1{font:900 clamp(34px,8.5vw,52px)/.9 var(--display);letter-spacing:.01em;text-transform:uppercase}
 h1 span{color:var(--tally)}
 .status{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:700 15px var(--mono)}
-.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:2px solid var(--line);border-radius:99px;background:var(--ink2)}
+.hdr-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:2px solid var(--line);border-radius:99px;background:var(--ink2);max-width:100%}
 .pill.cached{color:var(--dim);border-style:dashed}
+.pillbtn{font:700 14px var(--mono);color:var(--bone);cursor:pointer;text-transform:uppercase;letter-spacing:.05em}
+.pillbtn:hover{border-color:var(--bone)}
+.dlg-head{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.projrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;border:2px solid var(--line);border-radius:10px;background:var(--ink)}
+.projrow.cur{border-color:var(--go)}
+.projrow .meta{flex:1;min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.projrow b{font:700 16px var(--body);color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tally{width:12px;height:12px;border-radius:50%;background:var(--dim)}
 .tally.ready{background:var(--go);box-shadow:0 0 14px var(--go)}
 .tally.rolling{background:var(--tally);box-shadow:0 0 16px var(--tally);animation:blink 1s steps(2) infinite}
@@ -193,7 +201,10 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
 <div class="wrap">
   <header>
     <h1>Flow <span>Studio</span></h1>
-    <div class="status" id="status"><span class="pill"><i class="tally"></i>Connecting…</span></div>
+    <div class="hdr-right">
+      <div class="status" id="status"><span class="pill"><i class="tally"></i>Connecting…</span></div>
+      <button type="button" class="pill pillbtn" id="projBtn" hidden>Projects</button>
+    </div>
   </header>
   <div id="offline"></div>
   <div id="hint"></div>
@@ -523,6 +534,31 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
 
 <dialog id="picker"><h2 style="font-size:34px">Pick from Flow</h2><p class="empty">Media already in the open Flow project.</p><div class="lib" id="pickList"></div><div style="margin-top:16px"><button class="btn small ghost" onclick="picker.close()">Close</button></div></dialog>
 <dialog id="viewer"><div class="viewbar"><button type="button" class="btn small ghost" id="viewerTrash" style="border-color:var(--bad);color:var(--bad)">Move to <span data-place="bin">the Mac's Trash</span></button><button type="button" class="btn small" onclick="viewer.close()" autofocus>Close</button></div><div id="viewerBody"></div><p class="empty" id="viewerPath"></p></dialog>
+<dialog id="projDlg">
+  <div class="dlg-head">
+    <h2 style="margin:0">Projects</h2>
+    <div class="rowbtns" style="margin-top:0">
+      <button type="button" class="btn small ghost" id="projReload">Refresh</button>
+      <button type="button" class="btn small" id="projClose">Close</button>
+    </div>
+  </div>
+  <p class="empty" id="projInfo" style="margin-top:8px"></p>
+  <div class="lib" id="projList"></div>
+  <div id="projRenameWrap" style="margin-top:14px">
+    <label class="f" for="projRenameIn">Rename this project</label>
+    <div class="rowbtns" style="margin-top:6px">
+      <input type="text" id="projRenameIn" maxlength="100" placeholder="New project name" style="flex:1;min-width:160px">
+      <button type="button" class="btn small" id="projRenameGo">Rename</button>
+    </div>
+  </div>
+  <div style="margin-top:14px">
+    <label class="f" for="projNewIn">New project</label>
+    <div class="rowbtns" style="margin-top:6px">
+      <input type="text" id="projNewIn" maxlength="80" placeholder="Project name (optional)" style="flex:1;min-width:160px">
+      <button type="button" class="btn small ghost" id="projNewGo">New project</button>
+    </div>
+  </div>
+</dialog>
 <input type="file" id="file" hidden>
 <script>
 const TOKEN = "__FLOW_TOKEN__";
@@ -1321,14 +1357,21 @@ $("#cap_go").onclick = async () => {
 
 /* ---------- library ---------- */
 const chosen = new Set();
-$("#l_load").onclick = async () => {
+let libLoaded = false;
+async function loadLib() {
   if (!guard()) return;
   const b = $("#l_load"); b.disabled = true; b.textContent = "Reading Flow…";
   $("#l_list").innerHTML = `<p class="empty">Scrolling the project…</p>`;
-  try { LIB = await api("assets"); chosen.clear(); renderLib(); if (!LIB.length) $("#l_list").innerHTML = `<p class="empty">Nothing in the project yet.</p>`; }
-  catch (err) { $("#l_list").innerHTML = `<p class="empty" style="color:var(--bad)">${esc(err.message)}</p>`; }
+  try {
+    LIB = await api("assets");
+    libLoaded = true;
+    chosen.clear();
+    renderLib();
+    if (!LIB.length) $("#l_list").innerHTML = `<p class="empty">Nothing in the project yet.</p>`;
+  } catch (err) { $("#l_list").innerHTML = `<p class="empty" style="color:var(--bad)">${esc(err.message)}</p>`; }
   b.disabled = false; b.textContent = "Reload library";
-};
+}
+$("#l_load").onclick = loadLib;
 function renderLib() {
   $("#l_list").innerHTML = LIB.map((a, n) => `<button data-n="${n}" class="${chosen.has(n) ? "on" : ""}"><span>${chosen.has(n) ? "✓ " : ""}${esc(a.name)}</span><em>${a.kind}</em></button>`).join("");
   $("#l_dl").disabled = $("#l_dlhd").disabled = $("#l_trash").disabled = !chosen.size;
@@ -1496,9 +1539,167 @@ function savePills(plan, credits) {
   try { localStorage.setItem(PILLS_KEY, JSON.stringify({ plan, credits })); } catch {}
 }
 const savedPills = readSavedPills();
+let PROJECTS = [], flowInProject = false, flowProject = "", castLoadedFor = "", castLoading = false, switchingProject = false;
+
+async function refreshCast(key) {
+  if (!LIVE || castLoading) return;
+  castLoading = true;
+  try {
+    CAST = await loadCast();
+    if (key !== undefined) castLoadedFor = key;
+    renderCast();
+  } catch {}
+  castLoading = false;
+}
+
+async function afterProjectSwitch(msg) {
+  if (msg) toast(msg);
+  switchingProject = true;
+  castLoadedFor = "";
+  try {
+    await poll(true);
+    if (flowInProject) {
+      await refreshCast(flowProject || "__open__");
+      if (libLoaded || S.tab === "library") await loadLib();
+      else { LIB = []; chosen.clear(); renderLib(); }
+    } else {
+      CAST = []; renderCast();
+      LIB = []; chosen.clear(); renderLib();
+    }
+  } finally {
+    switchingProject = false;
+  }
+}
+
+async function loadProjects() {
+  if (!guard()) return;
+  const b = $("#projReload");
+  if (b) { b.disabled = true; b.textContent = "Loading…"; }
+  $("#projInfo").textContent = "";
+  $("#projList").innerHTML = `<p class="empty">Reading projects from Flow…</p>`;
+  try {
+    const out = await api("projects");
+    PROJECTS = Array.isArray(out?.projects) ? out.projects : [];
+    renderProjects();
+    const cur = PROJECTS.find((p) => p.current)?.name || flowProject;
+    if (cur && !$("#projRenameIn").value) $("#projRenameIn").value = cur;
+  } catch (err) {
+    $("#projList").innerHTML = "";
+    $("#projInfo").textContent = err.message;
+  }
+  if (b) { b.disabled = false; b.textContent = "Refresh"; }
+}
+function renderProjects() {
+  $("#projList").innerHTML = PROJECTS.length
+    ? PROJECTS.map((p) => `<div class="projrow${p.current ? " cur" : ""}"><div class="meta"><b>${esc(p.name)}</b>${p.current ? `<span class="badge done">Open</span>` : ""}</div><button type="button" class="btn small${p.current ? " ghost" : ""}" data-openproj="${esc(p.id)}" ${p.current ? "disabled" : ""}>${p.current ? "Open" : "Open"}</button></div>`).join("")
+    : `<p class="empty">No projects found in Flow yet.</p>`;
+}
+function openProjectsDialog(opts = {}) {
+  if (!guard()) return;
+  $("#projRenameWrap").hidden = !flowInProject;
+  $("#projRenameIn").value = flowProject || "";
+  $("#projInfo").textContent = "";
+  if (!$("#projDlg").open) $("#projDlg").showModal();
+  if (opts.focusNew) $("#projNewIn").focus();
+  loadProjects();
+}
+$("#projBtn").onclick = () => openProjectsDialog();
+$("#projClose").onclick = () => $("#projDlg").close();
+$("#projReload").onclick = loadProjects;
+$("#projList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-openproj]"); if (!b || b.disabled || !guard()) return;
+  const id = b.dataset.openproj;
+  b.disabled = true; b.textContent = "Opening…";
+  $("#projInfo").textContent = "";
+  try {
+    const out = await api("open_project", { project: id });
+    $("#projDlg").close();
+    await afterProjectSwitch(`Opened ${out.name || "project"}`);
+  } catch (err) {
+    $("#projInfo").textContent = err.message;
+    toast(err.message, true);
+    b.disabled = false; b.textContent = "Open";
+  }
+});
+$("#projRenameGo").onclick = async () => {
+  if (!guard()) return;
+  const title = $("#projRenameIn").value.trim();
+  if (!title || title.length > 100 || /[\r\n]/.test(title)) return toast("Enter a single-line project name (1 to 100 characters).", true);
+  const b = $("#projRenameGo"); b.disabled = true; b.textContent = "Renaming…";
+  $("#projInfo").textContent = "";
+  try {
+    const out = await api("rename_project", { title });
+    toast(`Renamed to ${out.to || title}`);
+    await poll(true);
+    await loadProjects();
+  } catch (err) {
+    $("#projInfo").textContent = err.message;
+    toast(err.message, true);
+  }
+  b.disabled = false; b.textContent = "Rename";
+};
+$("#projNewGo").onclick = async () => {
+  if (!guard()) return;
+  const title = $("#projNewIn").value.trim();
+  if (title && (title.length > 80 || /[\r\n]/.test(title))) return toast("Project name must be a single line (up to 80 characters).", true);
+  const b = $("#projNewGo"); b.disabled = true; b.textContent = "Creating…";
+  $("#projInfo").textContent = "";
+  try {
+    const out = await api("new_project", title ? { title } : {});
+    $("#projNewIn").value = "";
+    $("#projDlg").close();
+    await afterProjectSwitch(`Created ${out.title || "new project"}`);
+  } catch (err) {
+    $("#projInfo").textContent = err.message;
+    toast(err.message, true);
+  }
+  b.disabled = false; b.textContent = "New project";
+};
+$("#hint").addEventListener("click", async (e) => {
+  const newBtn = e.target.closest("[data-hintnew]");
+  if (newBtn) return void openProjectsDialog({ focusNew: true });
+  const b = e.target.closest("[data-hintproj]"); if (!b || b.disabled || !guard()) return;
+  const name = b.dataset.hintproj;
+  const allBtns = $$("#hint button");
+  allBtns.forEach((x) => (x.disabled = true));
+  const orig = b.textContent;
+  b.textContent = "Opening…";
+  try {
+    const list = await api("projects");
+    const match = (list?.projects ?? []).find((p) => p.name === name);
+    const out = await api("open_project", { project: match ? match.id : name });
+    await afterProjectSwitch(`Opened ${out.name || name}`);
+  } catch (err) {
+    toast(err.message, true);
+    allBtns.forEach((x) => (x.disabled = false));
+    b.textContent = orig;
+  }
+});
+
+function renderHint(f) {
+  const sig = JSON.stringify([Boolean(f?.signedIn), Boolean(f?.inProject), f?.projects ?? null, f?.error ?? null, f?.signedIn && !f?.inProject ? "" : (f?.hint ?? "")]);
+  if (sig === renderHint.sig) return;
+  renderHint.sig = sig;
+  if (!f) { $("#hint").innerHTML = ""; return; }
+  if (f.error) { $("#hint").innerHTML = `<div class="hint">${esc(f.error)}</div>`; return; }
+  if (f.signedIn && !f.inProject) {
+    const names = Array.isArray(f.projects) ? f.projects : [];
+    const body = names.length
+      ? `<div>Signed in, but no project is open. Pick a project to open:</div><div class="rowbtns" style="margin-top:8px">${names.map((n) => `<button type="button" class="btn small ghost" data-hintproj="${esc(n)}">${esc(n)}</button>`).join("")}<button type="button" class="btn small" data-hintnew="1">New project</button></div>`
+      : `<div>Signed in, but no project is open. Create a new project or open one in the Flow Chrome window.</div><div class="rowbtns" style="margin-top:8px"><button type="button" class="btn small" data-hintnew="1">New project</button></div>`;
+    $("#hint").innerHTML = `<div class="hint">${body}</div>`;
+    return;
+  }
+  $("#hint").innerHTML = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
+}
+
 function renderStatus(st) {
-  const f = st.flow, active = st.jobs.some((j) => j.status === "running" || j.status === "queued");
+  const f = st.flow ?? {}, active = st.jobs.some((j) => j.status === "running" || j.status === "queued");
   busy = false;
+  flowInProject = Boolean(f.signedIn && f.inProject);
+  flowProject = flowInProject && f.project ? f.project : "";
+  $("#projBtn").hidden = !(LIVE && f.signedIn);
+  $("#projRenameWrap").hidden = !flowInProject;
   const cls = !f.signedIn || !f.inProject ? "down" : active ? "rolling" : "ready";
   const text = !f.signedIn ? "Not signed in" : !f.inProject ? "No project open" : active ? "Working" : "Ready";
   let pillsChanged = false;
@@ -1509,8 +1710,14 @@ function renderStatus(st) {
   const planCached = !renderStatus.planLive && plan !== undefined;
   const credits = renderStatus.credits !== undefined ? renderStatus.credits : (f.signedIn ? savedPills.credits : undefined);
   const creditsCached = !renderStatus.creditsLive && credits !== undefined;
-  $("#status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${text}</span>${plan ? `<span class="pill${planCached ? " cached" : ""}">${esc(plan)}${planCached ? " (last known)" : ""}</span>` : ""}${credits !== undefined ? `<span class="pill${creditsCached ? " cached" : ""}">${credits.toLocaleString()} credits${creditsCached ? " (last known)" : ""}</span>` : ""}`;
-  $("#hint").innerHTML = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
+  $("#status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${text}</span>${flowProject ? `<span class="pill" id="projPill" title="Open Flow project">${esc(flowProject)}</span>` : ""}${plan ? `<span class="pill${planCached ? " cached" : ""}">${esc(plan)}${planCached ? " (last known)" : ""}</span>` : ""}${credits !== undefined ? `<span class="pill${creditsCached ? " cached" : ""}">${credits.toLocaleString()} credits${creditsCached ? " (last known)" : ""}</span>` : ""}`;
+  renderHint(f);
+  if (flowInProject) {
+    const key = flowProject || "__open__";
+    if (!switchingProject && castLoadedFor !== key && !castLoading) refreshCast(key);
+  } else if (castLoadedFor || CAST.length) {
+    castLoadedFor = ""; CAST = []; renderCast();
+  }
   $("#pacing").innerHTML = st.pacing ? `<div class="pacing">⏱ ${esc(st.pacing)}</div>` : "";
   const jobs = [...st.jobs].reverse();
   const sig = JSON.stringify(jobs.map((j) => [j.id, j.status, j.progress, j.files.length, j.credits, j.attempts, j.failed_scenes?.length ?? 0, j.note ?? "", j.error ?? "", Boolean(j.outcome_unknown)]));
@@ -1571,7 +1778,6 @@ for (const [id, path] of [["f_project", "frames"], ["s_project", "shots"], ["n_p
   }
   try { [TECH, VOICES] = await Promise.all([api("techniques"), api("voices")]); } catch { VOICES = { kokoro: [], gemini: [] }; }
   applyPlace(VOICES.place);
-  loadCast().then((c) => { CAST = c; renderCast(); }).catch(() => {});
   renderAll(); showTab(hashTab() ?? S.tab); poll(true); loadGallery();
 })();
 </script>
