@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -52,18 +52,29 @@ export function chromeExecutable(): string {
 async function launchChrome(): Promise<void> {
   const chromePath = chromeExecutable();
   mkdirSync(PROFILE_DIR, { recursive: true });
-  const child = spawn(
-    chromePath,
-    [
-      `--user-data-dir=${PROFILE_DIR}`,
-      `--remote-debugging-port=${CDP_PORT}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      inEnglish(FLOW_URL),
-    ],
-    { detached: true, stdio: "ignore" },
-  );
-  child.unref();
+  const args = [
+    `--user-data-dir=${PROFILE_DIR}`,
+    `--remote-debugging-port=${CDP_PORT}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    inEnglish(FLOW_URL),
+  ];
+  // On Windows, MCP servers are spawned hidden (SW_HIDE), which child GUI processes inherit unless started with Normal style.
+  if (process.platform === "win32") {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Start-Process -FilePath '${chromePath.replace(/'/g, "''")}' -ArgumentList ${args.map((a) => `'${a.replace(/'/g, "''")}'`).join(",")} -WindowStyle Normal`,
+      ],
+      { stdio: "ignore", windowsHide: true },
+    );
+  } else {
+    const child = spawn(chromePath, args, { detached: true, stdio: "ignore" });
+    child.unref();
+  }
   for (let i = 0; i < 40; i++) {
     if (await cdpUp()) return;
     await new Promise((r) => setTimeout(r, 500));
