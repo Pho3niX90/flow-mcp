@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, rmSync } from "node:fs";
+import { once } from "node:events";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Locator, Page, Response } from "playwright-core";
 import { checkNotTranslated, getMusicPage, MUSIC_URL } from "./chrome.js";
@@ -404,18 +405,12 @@ async function streamDirectMediaToFile(rawUrl: string, destFile: string): Promis
         await reader.cancel().catch(() => {});
         throw new Error(`Media stream exceeded the ${DIRECT_FETCH_MAX_BYTES / (1024 * 1024)} MB safety limit.`);
       }
-      if (!out.write(value)) {
-        await new Promise<void>((resolve, reject) => {
-          out.once("drain", resolve);
-          out.once("error", reject);
-        });
-      }
+      // once() takes its listeners off again when it settles. Adding an error listener by hand at every pause left
+      // one behind each time, and a 33 MB WAV pauses often enough for Node to warn of a leak.
+      if (!out.write(value)) await once(out, "drain");
     }
-    await new Promise<void>((resolve, reject) => {
-      out.once("finish", resolve);
-      out.once("error", reject);
-      out.end();
-    });
+    out.end();
+    await once(out, "finish");
   } catch (err) {
     await reader.cancel().catch(() => {});
     out.destroy();
