@@ -5,6 +5,7 @@ import { HOME_DIR, OUTPUT_ROOT, getFlowPage, inEnglish } from "./chrome.js";
 import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
+import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE } from "./tiles.js";
 import { matchesModelLabel } from "./video-models.js";
 
 export interface FlowState {
@@ -142,7 +143,7 @@ const TILE_ID_JS = `(tile) => {
   // once it plays, so the thumbnail is read first and the tile keeps one id either way.
   const media = tile.querySelector("img[src]") || tile.querySelector("video[src]");
   const src = media?.getAttribute("src") || "";
-  return src.match(/[0-9a-f]{8}-[0-9a-f-]{27}/)?.[0] || src.match(/\\/asb\\/([\\w-]{40,})/)?.[1] || undefined;
+  return src.match(new RegExp(${JSON.stringify(MEDIA_UUID_RE.source)}))?.[0] || src.match(new RegExp(${JSON.stringify(ASB_TOKEN_RE.source)}))?.[1] || undefined;
 }`;
 
 // What the grid looked like before a job started: the media uuids of the tiles mounted at the top, plus the titles
@@ -161,35 +162,6 @@ export async function mediaIds(page: Page): Promise<string[]> {
   );
 }
 
-// One walk down from the top of the grid, shared by everything that asks "what is new?". The grid is VIRTUALISED -
-// a 97-tile project mounts about 33 tiles at the top - so "an id that was not in my snapshot" proves nothing: a
-// download that scrolls mounts old tiles, and they then look fresh. What is reliable is the ORDER: Flow puts a new
-// tile first. So the walk stops at the first tile we already knew, and only what is above it is new.
-const WALK_JS = `([known, idJs]) => {
-  const seen = new Set(known);
-  const idOf = eval(idJs);
-  const fresh = [];
-  const pending = [];
-  let errors = 0;
-  for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
-    const id = idOf(tile);
-    if (id && seen.has(id)) return { fresh, pending, errors, sawKnown: true };
-    if (tile.querySelector("flow-error-tile")) { errors++; continue; }
-    const text = tile.innerText || "";
-    const pct = text.match(/\d+%/);
-    const isVideo = !!tile.querySelector("flow-video-tile");
-    const busy = !!pct || (isVideo && !tile.querySelector('img[alt="Generated video thumbnail"], video'));
-    if (busy) { if (pct) pending.push(pct[0]); continue; }
-    if (id) {
-      fresh.push({ id, kind: isVideo ? "video" : tile.querySelector("flow-image-tile") ? "image" : "other", label: tile.getAttribute("aria-label") || "" });
-      continue;
-    }
-    const name = tile.getAttribute("aria-label");
-    if (name && seen.has("title:" + name)) return { fresh, pending, errors, sawKnown: true };
-  }
-  return { fresh, pending, errors, sawKnown: false };
-}`;
-
 type MediaKind = "image" | "video";
 
 interface GridWalk {
@@ -199,10 +171,48 @@ interface GridWalk {
   sawKnown: boolean;
 }
 
+// One walk down from the top of the grid, shared by everything that asks "what is new?". The grid is VIRTUALISED -
+// a 97-tile project mounts about 33 tiles at the top - so "an id that was not in my snapshot" proves nothing: a
+// download that scrolls mounts old tiles, and they then look fresh. What is reliable is the ORDER: Flow puts a new
+// tile first. So the walk stops at the first tile we already knew, and only what is above it is new.
+// Passed as a real function to page.evaluate (not an eval'd template string) so regex escapes like /\d+%/ stay intact.
 async function walkNewTiles(page: Page, known: Iterable<string>): Promise<GridWalk> {
   return page.evaluate(
-    ([ids, idJs, walkJs]: [string[], string, string]) => (eval(walkJs) as (a: [string[], string]) => GridWalk)([ids, idJs]),
-    [[...known], TILE_ID_JS, WALK_JS] as [string[], string, string],
+    ([ids, idJs]: [string[], string]) => {
+      const seen = new Set(ids);
+      const idOf = eval(idJs) as (t: Element) => string | undefined;
+      const fresh: { id: string; kind: string; label: string }[] = [];
+      const pending: string[] = [];
+      let errors = 0;
+      for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
+        const id = idOf(tile);
+        if (id && seen.has(id)) return { fresh, pending, errors, sawKnown: true };
+        if (tile.querySelector("flow-error-tile")) {
+          errors++;
+          continue;
+        }
+        const text = (tile as HTMLElement).innerText || "";
+        const pct = text.match(/\d+%/);
+        const isVideo = !!tile.querySelector("flow-video-tile");
+        const busy = !!pct || (isVideo && !tile.querySelector('img[alt="Generated video thumbnail"], video'));
+        if (busy) {
+          if (pct) pending.push(pct[0]);
+          continue;
+        }
+        if (id) {
+          fresh.push({
+            id,
+            kind: isVideo ? "video" : tile.querySelector("flow-image-tile") ? "image" : "other",
+            label: tile.getAttribute("aria-label") || "",
+          });
+          continue;
+        }
+        const name = tile.getAttribute("aria-label");
+        if (name && seen.has("title:" + name)) return { fresh, pending, errors, sawKnown: true };
+      }
+      return { fresh, pending, errors, sawKnown: false };
+    },
+    [[...known], TILE_ID_JS] as [string[], string],
   );
 }
 
@@ -1139,10 +1149,6 @@ export async function downloadCollection(name: string, dir: string): Promise<str
   return out.files;
 }
 
-// Titles this tool gives assets of its own: "<folder>-<file stem>", where the stems are scene-NN / clip-NN /
-// edit-NN. A tile already wearing one is an asset from an earlier run, never a tile a job has just made.
-const OUR_TITLE = /-(?:scene|clip|edit)-\d{1,3}(?:-v\d+)?$/i;
-
 // Flow titles clips itself and happily reuses a title: two takes of the same scene both came back as "Woman climbing
 // granite wall", which makes a clip impossible to identify by name and cost real time tonight. Renaming each finished
 // tile to our own scene name fixes it at the source - the user's suggestion, and the right one.
@@ -1679,7 +1685,8 @@ export async function renameAsset(name: string, newName: string): Promise<{ rena
   const assets = await scanGrid(page);
   const same = assets.filter((a) => a.name === name);
   if (!same.length) throw new Error(`Nothing in the open project is called "${name}". Use flow_assets to list titles.`);
-  if (same.length > 1) throw new Error(`${same.length} items are called "${name}", so it isn't clear which one to rename. Rename one by hand in Flow first.`);
+  const copies = await countTitled(page, name);
+  if (copies > 1) throw new Error(`${copies} items are called "${name}", so it isn't clear which one to rename. Rename one by hand in Flow first.`);
   if (assets.some((a) => a.name === newName)) throw new Error(`Something in the project is already called "${newName}". Pick a title that is free.`);
   // Scan again, stopping on the tile so it stays mounted in the virtual grid (no scrollToTop before acting on it).
   await scanGrid(page, (seen) => seen.some((a) => a.name === name));
