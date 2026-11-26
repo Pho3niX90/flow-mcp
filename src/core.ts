@@ -914,7 +914,7 @@ export class LocalCore implements Core {
       if (job?.outcome_unknown) {
         if (explicit) {
           throw new Error(
-            `Job ${job.id} (${job.params.file_stem}) timed out after Generate was pressed, so the song may already exist in Flow Music. Check flow_music_songs and use flow_music_download instead of retrying and spending credits twice.`,
+            `Job ${job.id} (${job.params.file_stem}) is not retried: Generate had already been pressed for it, so retrying would make the song, and pay for it, a second time. Check flow_music_songs and fetch it with flow_music_download instead. What happened: ${job.error ?? "unknown"}`,
           );
         }
         skippedUnknown.push(job);

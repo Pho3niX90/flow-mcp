@@ -535,6 +535,10 @@ export async function generateMusicSong(
       const body = await res.json().catch(() => null);
       for (const clip of parseMusicClipsResponse(body)) clipsById.set(clip.id, clip);
     } else if (url.includes("/__api/billing/credits")) {
+      // Only a balance reported once the song is finished counts as "after". The page also asks for its balance at
+      // other moments, and one read while the song was still being made is the balance before the charge: taken as
+      // "after", it would show every song as free and the spending guard would never see an overcharge.
+      if (!completed) return;
       const body = await res.json().catch(() => null);
       const c = parseMusicCredits(body).credits_remaining;
       if (c !== undefined) creditsAfterFromEvent = c;
@@ -594,7 +598,15 @@ export async function generateMusicSong(
 
   trace(`music: generation complete (${finishedClip.id})`);
   onProgress?.("downloading song");
-  const files = await downloadSongOnPage(page, finishedClip.id, outputStem, formats);
+  const made = finishedClip;
+  // From here the song exists and has been paid for. A download that fails must say so, with the song's id, and must
+  // not look like a plain failure that flow_retry would answer by making (and paying for) the song a second time.
+  const files = await downloadSongOnPage(page, made.id, outputStem, formats).catch((err: unknown) => {
+    trace(`music: download failed after generation (${err instanceof Error ? err.message.split("\n")[0].slice(0, 120) : err})`);
+    throw new MusicOutcomeUnknownError(
+      `The song was made and is in your Flow Music library (id ${made.id}, "${made.title}"), but it could not be downloaded: ${err instanceof Error ? err.message.split("\n")[0] : String(err)} Fetch it with flow_music_download and that id; do not generate it again.`,
+    );
+  });
 
   // Measure credits spent after downloads are done (never reload while generating).
   let creditsAfter = creditsAfterFromEvent;
