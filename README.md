@@ -173,7 +173,7 @@ npm run studio     # then open http://127.0.0.1:8787
 
 or double-click **Flow Studio.command** (Mac), **Flow Studio.cmd** (Windows) or **Flow Studio.sh** (Linux).
 
-Eight tabs, in the order you would use them:
+Nine tabs, in the order you would use them:
 
 - **Cast**: reusable characters. Create them, edit them in place, or build one from a picture.
 - **Frames**: free stills, with *match previous frame* to keep a set on-model.
@@ -183,10 +183,13 @@ Eight tabs, in the order you would use them:
   voices. Your saved narrations are listed
   here to play or delete, and there's a field for your Google AI Studio key (checked with Google, stored
   only on your computer; never paste it into a chat).
+- **Music**: original songs from Google Flow Music (1 to 3 minutes, instrumental or with lyrics, saved as
+  M4A, MP3 or WAV) plus your Flow Music library to re-download past songs. Runs in its own Chrome window on
+  its own queue lane, so songs never wait behind videos.
 - **Restyle**: change a clip you already have.
 - **Cut**: join any videos into one film, in the order you pick. Upload one, or choose from films you've
-  already made. Add a narration (from your saved ones or an upload) and music, and turn the clips' own
-  sound down so the narration sits on top.
+  already made. Add a narration (from your saved ones or an upload) and music (from your saved songs or an
+  upload), and turn the clips' own sound down so the narration sits on top.
 - **Captions**: put the spoken words on screen, the way short-form videos do, on wide or vertical videos.
   Pick a video and the language spoken in it (about 100 languages, or Detect automatically), choose a
   style (Bold pop, Highlight, Word by word, Clean, Boxed), where it sits (bottom,

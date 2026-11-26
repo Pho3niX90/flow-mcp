@@ -117,16 +117,17 @@ This is a limit in Flow itself, not something we can program around. The exact j
 A web page served by that same program, reachable only from your own computer.
 Start it by double-clicking **Flow Studio.command** (Mac) or **Flow Studio.cmd** (Windows) in the project folder.
 
-Eight tabs, in the order you'd use them:
+Nine tabs, in the order you'd use them:
 
 1. **Cast**: make characters and pick who's in the scene
 2. **Frames**: free key stills to lock the look before spending anything
 3. **Shots**: the paid clips, with a credit ceiling you set, and the card that carries on from a clip you already made
 4. **Voice**: record the narration, free. Your saved narrations are listed here, so you can play them back or delete the ones you don't want. This is also where you paste your free Google AI Studio key. It's checked with Google and saved only on your computer, so you never have to put it in a chat
-5. **Restyle**: change a clip you already have
-6. **Cut**: join everything into a finished film. Pick the videos you want, in order (ones you made, or any video you upload), then add a narration and music, and turn the clips' own sound down so the voice sits on top
-7. **Captions**: put the words on screen. Pick a video, the language spoken in it (or let it work that out) and a style, choose where the words sit (bottom, middle, top, or tap the preview to put them exactly where you want), how big they are, normal, capital or lowercase letters, and the highlight colour, and you see the result on a real frame of your video before making it. If the computer misheard a word, fix it in the text and the timing stays right; press Enter wherever you want a new caption to start. The first time you pick a video, it downloads a free speech model by itself, once: 148 MB for English, 574 MB for any other language
-8. **Library**: browse what Flow is holding, pull it back for free, or move things to Flow's Trash
+5. **Music**: make original songs in Google Flow Music (1 to 3 minutes, instrumental or with lyrics, saved as M4A, MP3 or WAV) or download ones already in your Flow Music library. Runs on its own queue lane, so songs don't wait behind videos
+6. **Restyle**: change a clip you already have
+7. **Cut**: join everything into a finished film. Pick the videos you want, in order (ones you made, or any video you upload), then add a narration and music (from your saved ones or an upload), and turn the clips' own sound down so the voice sits on top
+8. **Captions**: put the words on screen. Pick a video, the language spoken in it (or let it work that out) and a style, choose where the words sit (bottom, middle, top, or tap the preview to put them exactly where you want), how big they are, normal, capital or lowercase letters, and the highlight colour, and you see the result on a real frame of your video before making it. If the computer misheard a word, fix it in the text and the timing stays right; press Enter wherever you want a new caption to start. The first time you pick a video, it downloads a free speech model by itself, once: 148 MB for English, 574 MB for any other language
+9. **Library**: browse what Flow is holding, pull it back for free, or move things to Flow's Trash
 
 Progress and a gallery of your saved work sit alongside. The gallery shows stills or clips on the tabs where you'd use them, and on a wide screen each side scrolls on its own.
 
