@@ -341,6 +341,7 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 | *"Not signed in"* or *"no project open"* | Run `npm run login`, sign in, open a Flow project, leave the window open |
 | A clip generated but no file arrived | The media is still in Flow. `flow_download` pulls it back for nothing. Never re-generate and pay twice |
 | Everything times out | The Chrome window was closed, or the machine slept. Reopen it with `npm run login` |
+| Linux: `npm install` fails in `onnxruntime-node` with *"Failed to download the binaries: 404"* | Its installer wants GPU files that are no longer published. This repository's `.npmrc` skips them; if your npm ignores that, run `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install` |
 | `connectOverCDP`: *"Browser context management is not supported"* | Seen on Chrome 156; update Google Chrome to a newer version |
 | Every click takes seconds and jobs crawl | Flow's Chrome window was opened by an older version. Chrome slows a window that is covered by other windows to one frame a second, and this version starts Chrome so that it does not. Close Flow's Chrome window; the next job opens it again |
 | A job is slow or stops and you cannot tell where | Start it with `FLOW_MCP_TRACE=1` and read the steps and their times in the log |
@@ -399,6 +400,7 @@ which would have let a job spend past its limit).
 - A Flow Chrome window left open by an older version is found again after updating.
 - `flow_trash` and `flow_rename` refuse whole Library collections.
 - Working files follow `FLOW_MCP_HOME` to another drive.
+- `npm install` works on Linux again (a dependency's GPU download had started failing the whole install).
 - Tests: `npm test` runs them, and they run on Windows, macOS and Linux for every change.
 
 ## Licence and risk

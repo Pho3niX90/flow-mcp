@@ -19,4 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+        env:
+          # Same as .npmrc, for npm versions that no longer pass unknown settings to install scripts.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
       - run: npm test
