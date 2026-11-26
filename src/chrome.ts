@@ -115,9 +115,12 @@ export async function freePort(wanted: number, tries = 20): Promise<number> {
   throw new Error(`No free port from ${wanted} to ${wanted + tries - 1}.`);
 }
 
-// Points Chrome's profile fallback download directory at the account's own download folder instead of ~/Downloads.
-// Only called while Chrome for this profile is NOT running. Merges valid JSON in place and leaves an unreadable
-// Preferences file untouched so an existing profile can never be corrupted.
+// Points Chrome's profile fallback download directory at the account's own download folder instead of ~/Downloads,
+// and sets profile.default_content_setting_values.automatic_downloads = 1 when not already set so Chrome does not
+// hold repeated downloads behind a "download multiple files" address-bar prompt (takes effect the next time that
+// Chrome is started). Only called while Chrome for this profile is NOT running. Merges valid JSON in place, never
+// overwrites an existing automatic_downloads choice, and leaves an unreadable Preferences file untouched so an
+// existing profile can never be corrupted.
 export function seedDownloadPreferences(profile: string, dlDir: string): boolean {
   const defaultDir = join(profile, "Default");
   const prefsFile = join(defaultDir, "Preferences");
@@ -139,6 +142,22 @@ export function seedDownloadPreferences(profile: string, dlDir: string): boolean
       ? (prefs.download as Record<string, unknown>)
       : {};
   prefs.download = { ...existingDownload, default_directory: dlDir, prompt_for_download: false };
+  const existingProfile =
+    prefs.profile && typeof prefs.profile === "object" && !Array.isArray(prefs.profile)
+      ? (prefs.profile as Record<string, unknown>)
+      : {};
+  const existingDefaults =
+    existingProfile.default_content_setting_values &&
+    typeof existingProfile.default_content_setting_values === "object" &&
+    !Array.isArray(existingProfile.default_content_setting_values)
+      ? (existingProfile.default_content_setting_values as Record<string, unknown>)
+      : {};
+  if (existingDefaults.automatic_downloads === undefined) {
+    prefs.profile = {
+      ...existingProfile,
+      default_content_setting_values: { ...existingDefaults, automatic_downloads: 1 },
+    };
+  }
   try {
     writeFileSync(prefsFile, JSON.stringify(prefs));
     return true;

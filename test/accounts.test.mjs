@@ -78,17 +78,38 @@ test("seedDownloadPreferences writes fresh JSON, merges existing prefs, and leav
     const parsed1 = JSON.parse(readFileSync(join(p1, "Default", "Preferences"), "utf8"));
     assert.equal(parsed1.download.default_directory, d1);
     assert.equal(parsed1.download.prompt_for_download, false);
+    assert.equal(parsed1.profile.default_content_setting_values.automatic_downloads, 1);
 
-    // Existing valid profile keeps unrelated settings intact.
+    // Existing valid profile keeps unrelated settings intact and adds automatic_downloads when absent.
     const p2 = join(tmp, "p2");
     const d2 = join(tmp, "d2");
     mkdirSync(join(p2, "Default"), { recursive: true });
-    writeFileSync(join(p2, "Default", "Preferences"), JSON.stringify({ profile: { name: "KeepMe" }, download: { extensions_to_open: "pdf" } }));
+    writeFileSync(
+      join(p2, "Default", "Preferences"),
+      JSON.stringify({
+        profile: { name: "KeepMe", default_content_setting_values: { notifications: 2 } },
+        download: { extensions_to_open: "pdf" },
+      }),
+    );
     assert.equal(seedDownloadPreferences(p2, d2), true);
     const parsed2 = JSON.parse(readFileSync(join(p2, "Default", "Preferences"), "utf8"));
     assert.equal(parsed2.profile.name, "KeepMe");
+    assert.equal(parsed2.profile.default_content_setting_values.notifications, 2);
+    assert.equal(parsed2.profile.default_content_setting_values.automatic_downloads, 1);
     assert.equal(parsed2.download.extensions_to_open, "pdf");
     assert.equal(parsed2.download.default_directory, d2);
+
+    // An existing automatic_downloads choice made by the user is never overwritten.
+    const p2b = join(tmp, "p2b");
+    const d2b = join(tmp, "d2b");
+    mkdirSync(join(p2b, "Default"), { recursive: true });
+    writeFileSync(
+      join(p2b, "Default", "Preferences"),
+      JSON.stringify({ profile: { default_content_setting_values: { automatic_downloads: 2 } } }),
+    );
+    assert.equal(seedDownloadPreferences(p2b, d2b), true);
+    const parsed2b = JSON.parse(readFileSync(join(p2b, "Default", "Preferences"), "utf8"));
+    assert.equal(parsed2b.profile.default_content_setting_values.automatic_downloads, 2);
 
     // Corrupt Preferences file is left strictly untouched.
     const p3 = join(tmp, "p3");
