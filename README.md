@@ -303,8 +303,31 @@ npm run login -- backup --music     # additional account
 
 ## Tools
 
+### Tools are loaded as they are needed
+
+`flow-mcp` has 33 tools. To avoid filling an assistant's context window up front, only the `core` group and two small discovery tools (`flow_tools` and `flow_call`) are listed when a session starts. The assistant calls `flow_tools` to browse, search, or switch on the remaining groups for the session; in MCP apps that do not refresh their tool list automatically, it can run any tool straight away by name through `flow_call` using the schema `flow_tools` returns.
+
+| Group | What it covers | Tools |
+|---|---|---|
+| `core` *(always on)* | Session status, queueing, waiting, cancel/retry, listing and downloading media | `flow_status`, `flow_generate`, `flow_wait`, `flow_cancel`, `flow_retry`, `flow_assets`, `flow_download` |
+| `images` | Fast Agent image batches, transparent PNG cutouts, default image model | `flow_agent_images`, `flow_cutout`, `flow_image_models` |
+| `video` | Video-to-video edits, continuing a clip from its last frame, camera presets | `flow_edit`, `flow_continue`, `flow_techniques` |
+| `characters` | Creating, listing, restyling, and setting voices on reusable characters | `flow_character`, `flow_character_edit`, `flow_characters` |
+| `projects` | Listing, creating, opening, and renaming projects; parallel Google accounts | `flow_projects`, `flow_new_project`, `flow_open_project`, `flow_rename_project`, `flow_accounts` |
+| `library` | Renaming items or moving project media to Flow's Trash | `flow_trash`, `flow_rename` |
+| `sound` | Local or Google narration, voice list, local speech transcription | `flow_narrate`, `flow_voices`, `flow_transcribe` |
+| `film` | Assembling clips into one MP4, burning captions, talking-presenter explainers | `flow_assemble`, `flow_captions`, `flow_presenter` |
+| `music` | Google Flow Music status, song generation, library listing, and downloads | `flow_music_status`, `flow_music`, `flow_music_songs`, `flow_music_download` |
+
+Set `FLOW_MCP_TOOLS` to change what starts enabled:
+- unset or `progressive` *(default)*: `core` plus `flow_tools` and `flow_call`.
+- `all`: every tool listed from the start (the previous behaviour).
+- a comma-separated list of groups, e.g. `FLOW_MCP_TOOLS=core,music,film`: those groups start enabled (`core` is always on).
+
 | Tool | Purpose |
 |---|---|
+| `flow_tools` | List all tool groups with one-line summaries, search tools by keyword, inspect one group, or switch groups/tools on or off for the session (returns full descriptions and JSON Schemas when enabling) |
+| `flow_call` | Run any tool by name with its normal validation and handler, even when it is not currently listed |
 | `flow_status` | Session state (signed in, which project is open, plan, credits left), queue, pacing, prompt playbook |
 | `flow_accounts` | Manage Google Flow accounts (`list`, `add`, `enable`, `disable`, `remove`) so several signed-in accounts can work in parallel |
 | `flow_image_models` | List Flow's available image models and optionally save a default image model (used when `model` is omitted on image generations) |
@@ -373,7 +396,8 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 - Settings file: `~/.flow-mcp/config.json` (`port`, `cdpPort`, `output`, `chrome`), created on first
   `flow-studio start`. Environment variables override it: `GEMINI_API_KEY`, `FLOW_MCP_PORT` (8787),
   `FLOW_MCP_OUTPUT`, `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PROJECT`,
-  `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`, `FLOW_MCP_MUSIC_PAUSE_MIN_S`, `FLOW_MCP_MUSIC_PAUSE_MAX_S`.
+  `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`, `FLOW_MCP_MUSIC_PAUSE_MIN_S`, `FLOW_MCP_MUSIC_PAUSE_MAX_S`,
+  `FLOW_MCP_TOOLS` (`progressive` by default, `all` to list every tool at startup, or a comma-separated list of tool groups).
   Helper programs, if they are not on your PATH: `FLOW_MCP_FFMPEG`, `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
 - Everything can live on another drive. `FLOW_MCP_HOME` moves the Chrome profile, downloads, settings and logs;
   working files for cutting and captions then go to a `tmp` folder inside it (or wherever `FLOW_MCP_TMP` points)
