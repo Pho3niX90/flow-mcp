@@ -428,4 +428,52 @@ server.registerTool(
   (args) => reply(patient("flow_presenter", core.presenter(args))),
 );
 
+server.registerTool(
+  "flow_music_status",
+  {
+    title: "Check Flow Music session, credits, and music lane",
+    description:
+      "Check whether the Flow Music window (https://www.flowmusic.app/) is signed in, its plan tier and credit balance (read from the page's own responses; skips reload while a song is generating), and what the music queue lane is doing.",
+    inputSchema: shapes.music_status,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_music_status", core.music_status(args))),
+);
+
+server.registerTool(
+  "flow_music",
+  {
+    title: "Generate songs in Google Flow Music",
+    description:
+      "Queue one or more songs through Google Flow Music's compose panel (Lyria 3.5 / Lyria 3 Pro) on the separate music lane, so songs run alongside Flow video/image jobs without waiting behind them. Saves <output>/<project>/song-NN.<ext> (default format m4a; mp3 and wav also supported; length_seconds 60 to 180 / 1:00 to 3:00; instrumental defaults to true when lyrics are omitted). Credit guard: Flow Music shows NO price before generating (observed price: 5 credits per song). max_credits defaults to 10 and must be at least 5 or the song is refused before anything is typed; the account's credit balance is also checked before generating (refused if under 5). Spend is measured from the balance before minus after: if a song costs more than max_credits, it finishes with a warning note and every remaining queued music job is failed so nothing more starts. Use flow_wait, flow_status, flow_cancel, and flow_retry like other jobs.",
+    inputSchema: shapes.music,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  (args) => reply(core.music(args)),
+);
+
+server.registerTool(
+  "flow_music_songs",
+  {
+    title: "List songs in Flow Music library",
+    description:
+      "List songs from your Flow Music library (/library/my-songs), newest first, returning clip id, title, length in seconds, creation time, and the start of the sound description. Use the returned id or exact title with flow_music_download.",
+    inputSchema: shapes.music_songs,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_music_songs", core.music_songs(args))),
+);
+
+server.registerTool(
+  "flow_music_download",
+  {
+    title: "Download existing songs from Flow Music",
+    description:
+      "Download existing songs from your Flow Music library by clip id or exact title in the requested formats (m4a, mp3, wav; default m4a). Free; never regenerates. Refuses an ambiguous title and lists the matching clip ids so you can pass an id instead.",
+    inputSchema: shapes.music_download,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_music_download", core.music_download(args))),
+);
+
 await server.connect(new StdioServerTransport());

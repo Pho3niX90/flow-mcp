@@ -12,7 +12,15 @@ import { characterLook, characterVoice, characterVoices, createCharacter, create
 import { accountByName, addAccount, defaultAccount, defaultImageModel, enabledAccounts, listAccounts, loadSettings, onAccount, profileDir, saveSettings, setAccountEnabled } from "./accounts.js";
 import { getFlowPage } from "./chrome.js";
 import { differenceMatte } from "./matte.js";
-import { MusicOutcomeUnknownError, generateMusicSong, getMusicState } from "./music.js";
+import {
+  MUSIC_DEFAULT_MAX_CREDITS,
+  checkMusicCreditsBefore,
+  formatMusicLength,
+  validateMusicBpm,
+  validateMusicFormats,
+  validateMusicSeed,
+} from "./music-parse.js";
+import { MusicOutcomeUnknownError, downloadMusicSongs, generateMusicSong, getMusicState, listMusicSongs } from "./music.js";
 import { JobQueue, type Job, type Lane } from "./queue.js";
 import { projectDirIn } from "./paths.js";
 import { BIN, COMPUTER, moveToBin } from "./platform.js";
@@ -532,6 +540,43 @@ export const shapes = {
       .describe("For a copy or outfit variation of an existing character: the original's name. Copies that character's voice so continuity holds. Used when `voice` is omitted."),
   },
   techniques: { category: z.enum(["camera", "product", "transition", "image"]).optional() },
+  music_status: { account: accountField },
+  music: {
+    project: z.string().min(1).describe("Folder name under the output root where song-NN.<ext> files are saved."),
+    songs: z
+      .array(
+        z.object({
+          sound: z.string().trim().min(1).max(3000).describe("Sound description (style, instruments, mood, tempo feel, production)."),
+          lyrics: z.string().max(3000).optional().describe("Lyrics for vocal songs. When omitted or empty, instrumental defaults to true."),
+          instrumental: z.boolean().optional().describe("Instrumental track with no vocals. Default: true when lyrics are omitted, false when lyrics are provided."),
+          title: z.string().trim().max(100).optional().describe("Optional song title (up to 100 characters)."),
+          length_seconds: z.number().int().min(60).max(180).optional().describe("Song length in whole seconds, 60 to 180 (1:00 to 3:00)."),
+          bpm: z.number().int().min(20).max(400).optional().describe("Tempo in beats per minute (20 to 400)."),
+          seed: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]).optional().describe("Numeric seed (digits only)."),
+          model: z.string().min(1).optional().describe("Flow Music model label, e.g. 'Lyria 3.5' or 'Lyria 3 Pro'."),
+          formats: z.array(z.enum(["m4a", "mp3", "wav"])).min(1).default(["m4a"]).describe("Audio formats to download after generation. Default: ['m4a']."),
+          max_credits: z
+            .number()
+            .int()
+            .min(0)
+            .default(MUSIC_DEFAULT_MAX_CREDITS)
+            .describe("Credit cap per song (default 10). Must be at least 5 (Flow Music's observed price per song) or the job is refused before anything is typed."),
+        }),
+      )
+      .min(1)
+      .max(20),
+    account: accountField,
+  },
+  music_songs: {
+    limit: z.number().int().min(1).max(200).default(20).describe("Maximum number of songs to list from Flow Music's library (newest first, default 20)."),
+    account: accountField,
+  },
+  music_download: {
+    project: z.string().min(1).describe("Folder name under the output root where downloaded songs are saved."),
+    songs: z.array(z.string().min(1)).min(1).describe("Song clip ids or exact titles from flow_music_songs. An ambiguous title is refused with its matching ids."),
+    formats: z.array(z.enum(["m4a", "mp3", "wav"])).min(1).default(["m4a"]).describe("Audio formats to download (m4a, mp3, wav). Default: ['m4a']."),
+    account: accountField,
+  },
 };
 
 type Args<K extends keyof typeof shapes> = z.infer<z.ZodObject<(typeof shapes)[K]>>;
@@ -591,6 +636,10 @@ export interface Core {
   captions(a: Args<"captions">): Promise<unknown>;
   presenter(a: Args<"presenter">): Promise<unknown>;
   caption_setup(): Promise<unknown>;
+  music_status(a: Args<"music_status">): Promise<unknown>;
+  music(a: Args<"music">): Promise<unknown>;
+  music_songs(a: Args<"music_songs">): Promise<unknown>;
+  music_download(a: Args<"music_download">): Promise<unknown>;
 }
 
 // Flow's own voices: still offered when giving a character a voice, but narration no longer goes through Flow.
@@ -1125,6 +1174,119 @@ export class LocalCore implements Core {
 
   async rename_project({ title, account }: Args<"rename_project">) {
     return this.direct(account, () => renameProject(title));
+  }
+
+  private nextSongOffset(output_dir: string): number {
+    const onDisk = existsSync(output_dir) ? readdirSync(output_dir).map((f) => Number(f.match(/^song-(\d+)/)?.[1] ?? 0)) : [];
+    const queued = this.queue
+      .list()
+      .filter((j) => j.params.output_dir === output_dir && j.params.file_stem.startsWith("song-"))
+      .map(lastNumber);
+    return Math.max(0, ...onDisk, ...queued);
+  }
+
+  async music_status({ account }: Args<"music_status">) {
+    const target = account ? accountByName(account) : defaultAccount();
+    const busy = this.queue.busyOn(target.name, "music");
+    const music = await onAccount(target, () => getMusicState({ readCredits: !busy })).catch((err: Error) => ({ error: err.message }));
+    return {
+      account: target.name,
+      music,
+      lane: this.queue.workerView(target.name, "music"),
+      pacing: this.queue.pausedReason,
+      jobs: this.queue
+        .list()
+        .filter((j) => j.params.lane === "music")
+        .map(jobView),
+    };
+  }
+
+  async music({ project, songs, account }: Args<"music">) {
+    for (const [i, s] of songs.entries()) {
+      try {
+        checkMusicCreditsBefore(s.max_credits);
+        if (s.length_seconds !== undefined) formatMusicLength(s.length_seconds);
+        if (s.bpm !== undefined) validateMusicBpm(s.bpm);
+        if (s.seed !== undefined) validateMusicSeed(s.seed);
+        validateMusicFormats(s.formats);
+      } catch (err) {
+        throw new Error(`Song ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const output_dir = projectDir(project);
+    const offset = this.nextSongOffset(output_dir);
+    const pinned = this.pin(account, false);
+    const jobs: Job[] = [];
+    for (const [i, s] of songs.entries()) {
+      const lyrics = s.lyrics?.trim() || undefined;
+      const instrumental = s.instrumental ?? !lyrics;
+      const formats = validateMusicFormats(s.formats);
+      const seed = s.seed !== undefined ? validateMusicSeed(s.seed) : undefined;
+      jobs.push(
+        this.queue.add({
+          prompt: s.title ? `${s.title}: ${s.sound}` : s.sound,
+          type: "audio",
+          lane: "music",
+          max_credits: s.max_credits,
+          music: {
+            sound: s.sound,
+            ...(lyrics ? { lyrics } : {}),
+            instrumental,
+            ...(s.title ? { title: s.title } : {}),
+            ...(s.length_seconds !== undefined ? { length_seconds: s.length_seconds } : {}),
+            ...(s.bpm !== undefined ? { bpm: s.bpm } : {}),
+            ...(seed !== undefined ? { seed } : {}),
+            ...(s.model ? { model: s.model } : {}),
+            formats,
+          },
+          account: pinned,
+          output_dir,
+          file_stem: `song-${String(offset + i + 1).padStart(2, "0")}`,
+        }),
+      );
+    }
+    return { output_dir, jobs: jobs.map(jobView) };
+  }
+
+  async music_songs({ limit, account }: Args<"music_songs">) {
+    return this.direct(
+      account,
+      async () => {
+        const clips = await listMusicSongs(limit);
+        return {
+          songs: clips.map((c) => ({
+            id: c.id,
+            title: c.title,
+            ...(c.seconds !== undefined ? { seconds: c.seconds } : {}),
+            ...(c.created_at ? { created: c.created_at } : {}),
+            ...(c.sound ? { sound: c.sound.length > 160 ? `${c.sound.slice(0, 159)}…` : c.sound } : {}),
+          })),
+        };
+      },
+      "music",
+    );
+  }
+
+  async music_download({ project, songs, formats, account }: Args<"music_download">) {
+    return this.direct(
+      account,
+      async () => {
+        const dir = projectDir(project);
+        mkdirSync(dir, { recursive: true });
+        const offset = this.nextSongOffset(dir);
+        const res = await downloadMusicSongs(
+          songs,
+          (i) => join(dir, `song-${String(offset + i + 1).padStart(2, "0")}`),
+          formats,
+        );
+        return {
+          dir,
+          files: res.files,
+          songs: res.clips.map((c) => ({ id: c.id, title: c.title })),
+        };
+      },
+      "music",
+    );
   }
 
   // A copy of a character must sound like the original. The remembered voice is used when there is one, otherwise it is

@@ -51,6 +51,10 @@ export class RemoteCore implements Core {
   captions = captionsHere;
   presenter = presenterHere;
   caption_setup = captionSetupHere;
+  music_status = (a: unknown) => call("music_status", a ?? {});
+  music = (a: unknown) => call("music", a);
+  music_songs = (a: unknown) => call("music_songs", a ?? {});
+  music_download = (a: unknown) => call("music_download", a);
 
   // Long waits are split up so no single HTTP request outlives fetch's header timeout.
   async wait(a: { job_ids?: string[]; timeout_seconds: number }): Promise<unknown> {
