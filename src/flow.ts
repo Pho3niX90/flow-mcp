@@ -1,6 +1,7 @@
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { CDPSession, Locator, Page } from "playwright-core";
+import { AGENT_BUTTON_RE, AGENT_SWITCH_RE, classifyAgentToggleState } from "./agent-toggle.js";
 import { HOME_DIR, OUTPUT_ROOT, getFlowPage, inEnglish } from "./chrome.js";
 import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
@@ -81,26 +82,37 @@ async function clearBackdrops(page: Page): Promise<void> {
   }
 }
 
-// Flow renamed its agent toggle (2026-11-20): the plain "Agent" button became a switch whose accessible name says
-// what a click will do ("Turn on Flow Agent" / "Turn off Flow Agent"). Find either, and read its state from
-// aria-pressed, aria-checked or that name.
+// Flow renamed its agent toggle across UI revisions: "Agent" -> "Flow Agent" (770e001) and a switch/button whose
+// accessible name says what a click will do ("Turn on Flow Agent" / "Turn off Flow Agent", PR #38). Match any of
+// those without matching "Agent instructions" or "Agent settings", and read state via ARIA or label.
 function agentToggle(page: Page) {
   return page
-    .getByRole("button", { name: /^(Agent|Turn (on|off) Flow Agent)$/ })
-    .or(page.getByRole("switch", { name: /Flow Agent|^Agent$/ }))
+    .getByRole("button", { name: AGENT_BUTTON_RE })
+    .or(page.getByRole("switch", { name: AGENT_SWITCH_RE }))
     .first();
 }
 async function agentIsOn(page: Page): Promise<boolean | null> {
   const t = agentToggle(page);
-  if (!(await t.count().catch(() => 0))) return null;
-  const pressed =
-    (await t.getAttribute("aria-pressed", { timeout: 3000 }).catch(() => null)) ??
-    (await t.getAttribute("aria-checked", { timeout: 3000 }).catch(() => null));
-  if (pressed === "true" || pressed === "false") return pressed === "true";
-  const name = ((await t.getAttribute("aria-label", { timeout: 3000 }).catch(() => null)) ?? (await t.innerText({ timeout: 3000 }).catch(() => ""))).trim();
-  if (/^Turn off/i.test(name)) return true;
-  if (/^Turn on/i.test(name)) return false;
-  return null;
+  if (!(await t.isVisible().catch(() => false))) return null;
+  const ariaPressed = await t.getAttribute("aria-pressed", { timeout: 3000 }).catch(() => null);
+  const ariaChecked = ariaPressed === null ? await t.getAttribute("aria-checked", { timeout: 3000 }).catch(() => null) : null;
+  const label =
+    ariaPressed === null && ariaChecked === null
+      ? (await t.getAttribute("aria-label", { timeout: 3000 }).catch(() => null)) ?? (await t.innerText({ timeout: 3000 }).catch(() => ""))
+      : null;
+  return classifyAgentToggleState({ ariaPressed, ariaChecked, label });
+}
+
+// A project can open with the agent docked on the right as a side panel ("Untitled session", with a Close button whose
+// icon ligature text is right_panel_close; issues #42 and #24 comment 2). While it is open, the composer has no Agent
+// toggle at all; closing it restores the bottom bar and toggle.
+async function closeAgentSidePanel(page: Page): Promise<void> {
+  if (await agentToggle(page).isVisible().catch(() => false)) return;
+  const side = page.getByRole("button", { name: "Close", exact: true }).filter({ hasText: "right_panel_close" }).first();
+  if (await side.isVisible().catch(() => false)) {
+    await side.click({ timeout: 5000 }).catch(() => {});
+    await pause(page, 1200);
+  }
 }
 
 // The agent's own image model, set to the newest Nano Banana like single images. Best effort: a batch never fails over it.
@@ -1381,7 +1393,11 @@ export async function runGeneration(job: Job): Promise<string[]> {
   // (seen live on Linux, 2026-11-04, on a free still). Close it first, then ask the chip with a short timeout:
   // "no chip" means "not in agent mode", which is exactly what this job wants.
   await closeAgentSession(page);
-  if ((await agentIsOn(page)) === true) await setAgentMode(page, false);
+  await closeAgentSidePanel(page);
+  // Issue #43: some Flow UI variants omit the Agent toggle completely while keeping "Settings trigger" visible.
+  // When agentIsOn() is null and Settings trigger is showing, treat the composer as already in direct mode.
+  const agentState = await agentIsOn(page);
+  if (agentState === true) await setAgentMode(page, false);
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click();
 
@@ -1983,14 +1999,28 @@ async function setAgentMode(page: Page, on: boolean): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     await clearBackdrops(page);
     await closeAgentSettings(page);
-    if ((await agentIsOn(page)) === on) return;
+    await closeAgentSidePanel(page);
+    const current = await agentIsOn(page);
+    if (current === on) return;
+    if (current === null) {
+      const toggleVisible = await agent.isVisible().catch(() => false);
+      // Issue #43: no toggle in the DOM while Settings trigger is visible means the composer is already in direct mode.
+      if (!toggleVisible && !on && (await settingsTrigger(page).isVisible().catch(() => false))) return;
+      if (!toggleVisible && on) {
+        throw new Error(
+          "Could not switch Agent mode on: Flow's composer has no Agent toggle (Agent / Flow Agent / Turn on Flow Agent) on this page.",
+        );
+      }
+    }
     await agent.click({ timeout: 8000 }).catch((err: Error) => {
       const lines = err.message.split("\n").map((l) => l.trim());
       why = (lines.find((l) => /intercepts pointer events|not visible|not enabled|detached|not stable/.test(l)) ?? lines[0]).slice(0, 200);
     });
     await pause(page, 1500);
   }
-  if ((await agentIsOn(page)) !== on) {
+  const finalState = await agentIsOn(page);
+  if (finalState !== on) {
+    if (!on && finalState === null && (await settingsTrigger(page).isVisible().catch(() => false))) return;
     throw new Error(`Could not switch Agent mode ${on ? "on" : "off"}${why ? ` (${why})` : "; the click landed but the toggle did not change"}.`);
   }
 }
