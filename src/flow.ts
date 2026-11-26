@@ -2,7 +2,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync,
 import { basename, extname, join } from "node:path";
 import type { CDPSession, Locator, Page } from "playwright-core";
 import { accountDir, collectionsDir, currentAccount, defaultImageModel, downloadDir, looksFile, voicesFile } from "./accounts.js";
-import { AGENT_BUTTON_RE, AGENT_SWITCH_RE, classifyAgentToggleState } from "./agent-toggle.js";
+import { AGENT_BUTTON_RE, AGENT_ONLY_COMPOSER_ERROR, AGENT_SWITCH_RE, classifyAgentToggleState, isAgentOnlyComposer } from "./agent-toggle.js";
 import { FLOW_URL, OUTPUT_ROOT, ensureEnglish, getFlowPage, inEnglish } from "./chrome.js";
 import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
@@ -576,7 +576,7 @@ async function openSettings(page: Page): Promise<void> {
   const probe = page.getByRole("radio", { name: "Image", exact: true });
   for (let attempt = 0; attempt < 3; attempt++) {
     if (await probe.isVisible().catch(() => false)) return;
-    await settingsTrigger(page).click();
+    await settingsTrigger(page).click({ timeout: 5000 }).catch(() => {});
     await probe.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
   }
   if (!(await probe.isVisible().catch(() => false))) throw new Error("Could not open Flow's generation settings popover.");
@@ -1663,6 +1663,31 @@ async function ensureProjectGrid(page: Page): Promise<void> {
   await scrollToTop(page);
 }
 
+// Fails fast when Flow serves the agent-only composer (upstream issues 18 and 24) so a generation does not sit through
+// 30 s timeouts on the missing/hidden Settings trigger. Returns immediately with no added wait on the normal composer.
+async function assertGenerationSettingsAvailable(page: Page): Promise<void> {
+  if (await settingsTrigger(page).isVisible().catch(() => false)) return;
+  trace("composer: settings trigger not visible, checking for agent-only variant");
+  const agentPrompt = page.locator("flow-creative-agent-prompt-box, flow-agent-panel flow-creative-agent-prompt-box");
+  const hiddenTrigger = page.locator("button.settings-trigger-button");
+  const agentInstructions = page.locator('button[aria-label="Agent instructions"]');
+  await settingsTrigger(page)
+    .or(agentPrompt)
+    .or(agentInstructions)
+    .first()
+    .waitFor({ state: "visible", timeout: 3000 })
+    .catch(() => {});
+  const settingsTriggerVisible = await settingsTrigger(page).isVisible().catch(() => false);
+  if (settingsTriggerVisible) return;
+  const agentPromptBoxPresent =
+    (await agentPrompt.count().catch(() => 0)) > 0 ||
+    ((await hiddenTrigger.count().catch(() => 0)) > 0 && (await agentInstructions.count().catch(() => 0)) > 0);
+  trace(`composer: settingsTriggerVisible=${settingsTriggerVisible} agentPromptBoxPresent=${agentPromptBoxPresent}`);
+  if (isAgentOnlyComposer({ settingsTriggerVisible, agentPromptBoxPresent })) {
+    throw new Error(AGENT_ONLY_COMPOSER_ERROR);
+  }
+}
+
 // The project grid with the plain composer, empty and with Agent off: where every generation starts.
 async function readyComposer(): Promise<Page> {
   const state = await getFlowState();
@@ -1677,6 +1702,7 @@ async function readyComposer(): Promise<Page> {
   // When agentIsOn() is null and Settings trigger is showing, treat the composer as already in direct mode.
   const agentState = await agentIsOn(page);
   if (agentState === true) await setAgentMode(page, false);
+  await assertGenerationSettingsAvailable(page);
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click({ timeout: 3000 }).catch(() => {});
   return page;

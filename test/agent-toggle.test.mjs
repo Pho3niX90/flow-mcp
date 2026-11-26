@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { AGENT_BUTTON_RE, AGENT_SWITCH_RE, classifyAgentToggleState, isAgentToggleName } from "../dist/agent-toggle.js";
+import { AGENT_BUTTON_RE, AGENT_ONLY_COMPOSER_ERROR, AGENT_SWITCH_RE, classifyAgentToggleState, isAgentOnlyComposer, isAgentToggleName } from "../dist/agent-toggle.js";
 
 test("agent toggle patterns accept all valid Flow toggle names and refuse non-toggles", () => {
   for (const valid of ["Agent", "Flow Agent", "Turn on Flow Agent", "Turn off Flow Agent"]) {
@@ -30,4 +30,15 @@ test("classifyAgentToggleState reads aria-pressed, then aria-checked, then Turn 
   assert.equal(classifyAgentToggleState({ label: "Turn on Flow Agent" }), false);
   assert.equal(classifyAgentToggleState({ label: "Flow Agent" }), null);
   assert.equal(classifyAgentToggleState({}), null);
+});
+
+test("isAgentOnlyComposer flags only when Settings trigger is hidden/absent and an agent prompt box is present", () => {
+  assert.equal(isAgentOnlyComposer({ settingsTriggerVisible: false, agentPromptBoxPresent: true }), true);
+  assert.equal(isAgentOnlyComposer({ settingsTriggerVisible: true, agentPromptBoxPresent: true }), false);
+  assert.equal(isAgentOnlyComposer({ settingsTriggerVisible: true, agentPromptBoxPresent: false }), false);
+  assert.equal(isAgentOnlyComposer({ settingsTriggerVisible: false, agentPromptBoxPresent: false }), false);
+  assert.match(AGENT_ONLY_COMPOSER_ERROR, /agent-only composer/i);
+  assert.match(AGENT_ONLY_COMPOSER_ERROR, /nothing was generated or charged/i);
+  assert.match(AGENT_ONLY_COMPOSER_ERROR, /flow_agent_images/);
+  assert.match(AGENT_ONLY_COMPOSER_ERROR, /https:\/\/github\.com\/Pho3niX90\/flow-mcp\/issues/);
 });

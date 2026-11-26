@@ -27,3 +27,19 @@ export function classifyAgentToggleState({ ariaPressed, ariaChecked, label }: Ag
   if (/^Turn on\b/i.test(name)) return false;
   return null;
 }
+
+export interface ComposerControlsState {
+  settingsTriggerVisible: boolean;
+  agentPromptBoxPresent: boolean;
+}
+
+// True when Flow has served the agent-only composer (upstream issues 18 and 24): no visible per-generation
+// Settings trigger, and an agent prompt box is present instead.
+export function isAgentOnlyComposer({ settingsTriggerVisible, agentPromptBoxPresent }: ComposerControlsState): boolean {
+  return !settingsTriggerVisible && agentPromptBoxPresent;
+}
+
+export const AGENT_ONLY_COMPOSER_ERROR =
+  "This account shows Flow's agent-only composer, which has no per-generation model, aspect, length, or credit controls, so nothing was generated or charged. " +
+  "flow_agent_images may still work for stills. " +
+  "Please report this at https://github.com/Pho3niX90/flow-mcp/issues with your Google AI plan and the date so this variant can be mapped on an account that has it.";
