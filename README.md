@@ -273,7 +273,9 @@ npm run login -- backup --music     # additional account
   description, optional lyrics, instrumental toggle, title, length 1:00–3:00 / `length_seconds` 60–180, BPM,
   seed, model, and formats), `flow_music_songs` (list your library), and `flow_music_download` (download
   existing songs by id or exact title). Songs land in `~/flow-mcp-out/<project>/song-NN.<ext>` in `m4a`
-  (default), `mp3`, or `wav`.
+  (default), `mp3`, or `wav`. M4A and WAV files are fetched straight from where Flow Music stores them, and
+  MP3 is converted on this computer with FFmpeg (falling back to Flow Music's download menu if FFmpeg is not
+  installed).
 - **Credit guard:** Flow Music shows **no price before generating** (observed price: 5 credits per song).
   `max_credits` defaults to 10 and must be at least 5 or the song is refused before anything is typed; your
   credit balance is also checked before generating (refused if under 5). Spend is measured from the balance
