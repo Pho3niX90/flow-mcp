@@ -1827,12 +1827,18 @@ async function setAgentSettings(page: Page, confirm: "Always" | "Never", imageAs
 async function closeAgentSession(page: Page): Promise<void> {
   // The panel is `flow-agent-panel`, the same element the agent SETTINGS panel uses; the session one is the variant
   // with "Start new session" and "Close". Either way it sits where the composer goes and takes the Agent chip and
-  // "Settings trigger" off the page with it, so both are closed here. Checking the element and not only the button
-  // matters: Flow can restore the session panel on its own when a project is reopened.
-  const showing = (await page.locator("flow-agent-panel").count().catch(() => 0)) > 0;
-  const session = await page.getByRole("button", { name: "Start new session" }).isVisible().catch(() => false);
-  if (showing || session) {
-    await page.getByRole("button", { name: "Close", exact: true }).first().click({ timeout: 8000 }).catch(() => {});
+  // "Settings trigger" off the page with it, so both are closed here. Check visibility rather than count() so a
+  // hidden DOM shell never triggers an 8 s wait or clicks an unrelated Close button on the page.
+  const panel = page.locator("flow-agent-panel").first();
+  const panelVisible = await panel.isVisible().catch(() => false);
+  const sessionVisible = await page.getByRole("button", { name: "Start new session" }).isVisible().catch(() => false);
+  if (panelVisible || sessionVisible) {
+    const panelClose = panel.getByRole("button", { name: "Close", exact: true }).first();
+    if (await panelClose.isVisible().catch(() => false)) {
+      await panelClose.click({ timeout: 8000 }).catch(() => {});
+    } else if (sessionVisible) {
+      await page.getByRole("button", { name: "Close", exact: true }).first().click({ timeout: 8000 }).catch(() => {});
+    }
     await pause(page, 1000);
     await closeAgentSettings(page);
   }
