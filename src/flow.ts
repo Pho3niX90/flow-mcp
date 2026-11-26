@@ -1,10 +1,11 @@
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
-import type { Locator, Page } from "playwright-core";
+import type { CDPSession, Locator, Page } from "playwright-core";
 import { HOME_DIR, getFlowPage, inEnglish } from "./chrome.js";
+import { SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
 import type { Job } from "./queue.js";
-import { extractZip } from "./platform.js";
+import { extractZip, workDir } from "./platform.js";
 
 export interface FlowState {
   url: string;
@@ -471,15 +472,21 @@ async function uploadAsset(page: Page, job: Job, file: string, label: string): P
   if (file.startsWith(ASSET_PREFIX)) return file.slice(ASSET_PREFIX.length).trim();
   if (!existsSync(file)) throw new Error(`File not found: ${file}`);
   const name = `fm-${job.id}-${label}${extname(file).toLowerCase()}`;
-  const staged = join(mkdtempSync(join(tmpdir(), "flow-mcp-")), name);
+  const work = workDir("flow-mcp-");
+  const staged = join(work, name);
   copyFileSync(file, staged);
-  await scrollToTop(page);
-  await page.getByRole("button", { name: "Add media menu" }).click();
-  const chooser = page.waitForEvent("filechooser", { timeout: 10_000 });
-  await page.getByRole("menuitem", { name: "Upload", exact: true }).click();
-  await (await chooser).setFiles(staged);
-  await waitForUpload(page, name, 90_000);
-  return name;
+  try {
+    await scrollToTop(page);
+    await page.getByRole("button", { name: "Add media menu" }).click();
+    const chooser = page.waitForEvent("filechooser", { timeout: 10_000 });
+    await page.getByRole("menuitem", { name: "Upload", exact: true }).click();
+    await (await chooser).setFiles(staged);
+    await waitForUpload(page, name, 90_000);
+    return name;
+  } finally {
+    // The copy was only ever needed for the upload; it used to be left behind, one per reference image.
+    rmSync(work, { recursive: true, force: true });
+  }
 }
 
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -585,54 +592,73 @@ function tileByIdOrTitle(page: Page, id: string, title?: string): TileResolver {
 }
 
 const DOWNLOAD_DIR = join(HOME_DIR, "downloads");
-let downloadsReady = false;
+
+// Download names Chrome announced on Flow's page, newest last. Proof that a file in the user's own Downloads folder is
+// ours on systems that keep no record of where a download came from (see downloads.ts).
+const announced: { name: string; at: number }[] = [];
+const listening = new WeakSet<Page>();
+const downloadSessions = new WeakMap<Page, CDPSession>();
 
 // Playwright keeps a download in a per-connection temp file it can delete from under us; pointing Chrome itself at a
 // directory we own makes the bytes ours the moment they land.
 async function useOwnDownloadDir(page: Page): Promise<void> {
   // Setting this once per process was not enough: another CDP client attaching resets it browser-wide, and Chrome
   // quietly goes back to ~/Downloads. Every file we "could not download" tonight was sitting there the whole time,
-  // so this is re-asserted before every single download rather than cached behind a flag.
+  // so this is re-asserted before every single download, and again every two seconds while one is awaited: an
+  // upscale takes minutes to start arriving, which left plenty of time for the setting to be reset in between.
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
+  if (!listening.has(page)) {
+    listening.add(page);
+    page.on("download", (d) => {
+      announced.push({ name: d.suggestedFilename(), at: Date.now() });
+      if (announced.length > 50) announced.shift();
+    });
+  }
+  // One session per page, kept open and reused. Chrome puts the download folder back to its default when the session
+  // that set it closes, so it is never detached; a new one is opened only when the old one has stopped answering.
+  const behaviour = { behavior: "allowAndName", downloadPath: DOWNLOAD_DIR, eventsEnabled: true } as const;
+  const open = downloadSessions.get(page);
+  if (open && (await open.send("Browser.setDownloadBehavior", behaviour).then(() => true, () => false))) return;
   const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: DOWNLOAD_DIR, eventsEnabled: true }).catch(() => {});
-  downloadsReady = true;
+  downloadSessions.set(page, cdp);
+  await cdp.send("Browser.setDownloadBehavior", behaviour).catch(() => {});
 }
-
-// Chrome's own Downloads folder, where files land whenever the override above has been reset out from under us.
-const SYSTEM_DOWNLOADS = join(homedir(), "Downloads");
 
 // Everything already sitting in either folder, so a new arrival can be told apart from what was there before.
-function downloadsNow(): Set<string> {
-  const seen = new Set<string>();
-  for (const dir of [DOWNLOAD_DIR, SYSTEM_DOWNLOADS]) if (existsSync(dir)) for (const f of readdirSync(dir)) seen.add(`${dir}/${f}`);
-  return seen;
+function downloadsNow(): DownloadWatch {
+  return snapshotDownloads([DOWNLOAD_DIR, SYSTEM_DOWNLOADS]);
 }
 
-// Waits for a file to finish arriving in our download directory and returns it.
-async function waitForDownloadedFile(page: Page, before: Set<string>, timeoutMs: number): Promise<string> {
+// Waits for the file Flow is sending to finish arriving and returns it. It is looked for in our own download folder
+// and, for when the override has been reset behind our back, in Chrome's own: there only a file proven to be Flow's
+// is taken, never something else the user happened to download meanwhile.
+async function waitForDownloadedFile(page: Page, before: DownloadWatch, timeoutMs: number): Promise<string> {
   const deadline = Date.now() + timeoutMs;
-  let stable: { path: string; size: number } | undefined;
+  const settled = new SettledFiles();
+  let reasserted = Date.now();
   while (Date.now() < deadline) {
     // Every quarter second: an image is there in well under a second, and a size that held still across two checks
     // still proves Chrome has finished writing it.
     await pause(page, 250);
-    // Both places: ours, and Chrome's own folder for when the override has been reset behind our back.
-    const candidates: string[] = [];
-    for (const dir of [DOWNLOAD_DIR, SYSTEM_DOWNLOADS]) {
-      if (!existsSync(dir)) continue;
-      for (const f of readdirSync(dir)) {
-        if (before.has(`${dir}/${f}`) || f.endsWith(".crdownload") || f.startsWith(".")) continue;
-        candidates.push(join(dir, f));
+    const names = announced.filter((a) => a.at >= before.since).map((a) => a.name);
+    const candidates: { path: string; size: number }[] = [];
+    for (const path of newDownloads(before, DOWNLOAD_DIR, SYSTEM_DOWNLOADS, names)) {
+      try {
+        candidates.push({ path, size: statSync(path).size });
+      } catch {
+        // gone again between the listing and the look
       }
     }
-    for (const path of candidates) {
-      const size = statSync(path).size;
-      if (stable?.path === path && stable.size === size && size > 0) return path;
-      stable = { path, size };
+    const done = settled.next(candidates);
+    if (done) return done;
+    if (Date.now() - reasserted >= 2000) {
+      reasserted = Date.now();
+      await useOwnDownloadDir(page).catch(() => {});
     }
   }
-  throw new Error("Flow started the download but no file arrived in either the tool's folder or ~/Downloads.");
+  throw new Error(
+    "Flow started the download but no file arrived in the tool's folder, and nothing new in ~/Downloads came from Flow. The media is still in Flow: flow_download fetches it again without spending credits.",
+  );
 }
 
 // Flow reveals a tile's controls on a genuine pointer move, so the mouse is driven to the tile itself.
@@ -673,7 +699,7 @@ function extensionOf(file: string): string {
 // Unpacks a multi-take ZIP into <stem>.mp4, <stem>-v2.mp4, ... - the same names a multi-variant generation gets - so
 // every take is usable instead of one unplayable archive. The ZIP is kept beside them, renamed, in case it is wanted.
 function unpackTakes(zip: string, targetStem: string): string[] {
-  const work = mkdtempSync(join(tmpdir(), "flow-takes-"));
+  const work = workDir("flow-takes-");
   const takes = extractZip(zip, work).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const out: string[] = [];
   for (const [i, path] of takes.entries()) {
@@ -682,6 +708,7 @@ function unpackTakes(zip: string, targetStem: string): string[] {
     out.push(dest);
   }
   moveFile(zip, `${targetStem}-takes.zip`);
+  rmSync(work, { recursive: true, force: true });
   if (!out.length) throw new Error("Flow sent a ZIP with nothing usable inside it.");
   return out;
 }
@@ -852,7 +879,7 @@ async function downloadOpenCollection(page: Page, timeoutMs: number): Promise<st
 // Unpacks a collection ZIP. With `wanted`, each image is saved as its stem (matched by the media id in its name);
 // without, every image keeps its own name. Returns the saved files and the ids that were not in the ZIP.
 function unpackCollection(zip: string, dir: string, wanted?: { id: string; stem: string }[]): { files: string[]; saved: Map<string, string> } {
-  const work = mkdtempSync(join(tmpdir(), "flow-collection-"));
+  const work = workDir("flow-collection-");
   try {
     const entries = extractZip(zip, work);
     const files: string[] = [];
