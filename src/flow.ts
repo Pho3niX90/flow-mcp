@@ -1679,9 +1679,11 @@ async function assertGenerationSettingsAvailable(page: Page): Promise<void> {
     .catch(() => {});
   const settingsTriggerVisible = await settingsTrigger(page).isVisible().catch(() => false);
   if (settingsTriggerVisible) return;
+  // What counts is what is SHOWING. Flow keeps parts of its agent in the page while they are hidden, and a normal
+  // composer that was merely slow to draw must not be told it is the agent-only kind.
   const agentPromptBoxPresent =
-    (await agentPrompt.count().catch(() => 0)) > 0 ||
-    ((await hiddenTrigger.count().catch(() => 0)) > 0 && (await agentInstructions.count().catch(() => 0)) > 0);
+    (await agentPrompt.first().isVisible().catch(() => false)) ||
+    ((await hiddenTrigger.count().catch(() => 0)) > 0 && (await agentInstructions.first().isVisible().catch(() => false)));
   trace(`composer: settingsTriggerVisible=${settingsTriggerVisible} agentPromptBoxPresent=${agentPromptBoxPresent}`);
   if (isAgentOnlyComposer({ settingsTriggerVisible, agentPromptBoxPresent })) {
     throw new Error(AGENT_ONLY_COMPOSER_ERROR);
