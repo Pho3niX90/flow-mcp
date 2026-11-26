@@ -29,6 +29,7 @@ h1{font:900 clamp(34px,8.5vw,52px)/.9 var(--display);letter-spacing:.01em;text-t
 h1 span{color:var(--tally)}
 .status{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:700 15px var(--mono)}
 .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:2px solid var(--line);border-radius:99px;background:var(--ink2)}
+.pill.cached{color:var(--dim);border-style:dashed}
 .tally{width:12px;height:12px;border-radius:50%;background:var(--dim)}
 .tally.ready{background:var(--go);box-shadow:0 0 14px var(--go)}
 .tally.rolling{background:var(--tally);box-shadow:0 0 16px var(--tally);animation:blink 1s steps(2) infinite}
@@ -1166,14 +1167,35 @@ $("#jobs").addEventListener("click", async (e) => {
   try { if (r) await api("retry", { job_ids: [r.dataset.retry] }); if (c) await api("cancel", { job_id: c.dataset.cancel }); if (r || c) poll(); }
   catch (err) { toast(err.message, true); }
 });
+const PILLS_KEY = "flow-studio-pills-v1";
+function readSavedPills() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PILLS_KEY) || "null");
+    if (!raw || typeof raw !== "object") return {};
+    return {
+      plan: typeof raw.plan === "string" && raw.plan ? raw.plan : undefined,
+      credits: typeof raw.credits === "number" && Number.isFinite(raw.credits) ? raw.credits : undefined,
+    };
+  } catch { return {}; }
+}
+function savePills(plan, credits) {
+  try { localStorage.setItem(PILLS_KEY, JSON.stringify({ plan, credits })); } catch {}
+}
+const savedPills = readSavedPills();
 function renderStatus(st) {
   const f = st.flow, active = st.jobs.some((j) => j.status === "running" || j.status === "queued");
   busy = false;
   const cls = !f.signedIn || !f.inProject ? "down" : active ? "rolling" : "ready";
   const text = !f.signedIn ? "Not signed in" : !f.inProject ? "No project open" : active ? "Working" : "Ready";
-  if (f.credits_remaining !== undefined) renderStatus.credits = f.credits_remaining;
-  if (f.plan) renderStatus.plan = f.plan;
-  $("#status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${text}</span>${renderStatus.plan ? `<span class="pill">${esc(renderStatus.plan)}</span>` : ""}${renderStatus.credits !== undefined ? `<span class="pill">${renderStatus.credits.toLocaleString()} credits</span>` : ""}`;
+  let pillsChanged = false;
+  if (f.credits_remaining !== undefined) { renderStatus.credits = f.credits_remaining; renderStatus.creditsLive = true; pillsChanged = true; }
+  if (f.plan) { renderStatus.plan = f.plan; renderStatus.planLive = true; pillsChanged = true; }
+  if (pillsChanged) savePills(renderStatus.plan ?? savedPills.plan, renderStatus.credits ?? savedPills.credits);
+  const plan = renderStatus.plan ?? (f.signedIn ? savedPills.plan : undefined);
+  const planCached = !renderStatus.planLive && plan !== undefined;
+  const credits = renderStatus.credits !== undefined ? renderStatus.credits : (f.signedIn ? savedPills.credits : undefined);
+  const creditsCached = !renderStatus.creditsLive && credits !== undefined;
+  $("#status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${text}</span>${plan ? `<span class="pill${planCached ? " cached" : ""}">${esc(plan)}${planCached ? " (last known)" : ""}</span>` : ""}${credits !== undefined ? `<span class="pill${creditsCached ? " cached" : ""}">${credits.toLocaleString()} credits${creditsCached ? " (last known)" : ""}</span>` : ""}`;
   $("#hint").innerHTML = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
   $("#pacing").innerHTML = st.pacing ? `<div class="pacing">⏱ ${esc(st.pacing)}</div>` : "";
   const jobs = [...st.jobs].reverse();
