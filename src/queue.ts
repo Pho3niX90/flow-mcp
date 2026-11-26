@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+export type Lane = "flow" | "music";
 
 export interface SceneParams {
   prompt: string;
   type: "video" | "image";
   max_credits: number;
+  // Which site lane drives this job: "flow" (default) or "music". Different lanes on the same account run in parallel.
+  lane?: Lane;
   duration?: number;
   resolution?: "360p" | "720p";
   model?: string;
@@ -63,28 +66,33 @@ export interface Job {
   finishedAt?: string;
 }
 
-export type JobRunner = (job: Job, account: string) => Promise<string[]>;
+export type JobRunner = (job: Job, account: string, lane: Lane) => Promise<string[]>;
 // Sends several image scenes one after another without waiting for each, then collects them; one result per job.
-export type BatchRunner = (jobs: Job[], account: string) => Promise<(string[] | Error)[]>;
+export type BatchRunner = (jobs: Job[], account: string, lane: Lane) => Promise<(string[] | Error)[]>;
 
 export interface QueueHooks {
   // The accounts that may take work, in order of preference.
   accounts: () => string[];
-  // undefined when the account can generate now, otherwise what the user must do first (sign in, open a project).
-  ready: (account: string) => Promise<string | undefined>;
+  // undefined when the account can generate on this lane now, otherwise what the user must do first (sign in, open a project).
+  ready: (account: string, lane: Lane) => Promise<string | undefined>;
   // Optional batch runner for queued parallel image scenes on one account.
   batchRunner?: BatchRunner;
   // Optional overrides for pacing in unit tests.
   pauseMinMs?: number;
   pauseMaxMs?: number;
+  musicPauseMinMs?: number;
+  musicPauseMaxMs?: number;
 }
 
-// Flow is driven like a careful person would: one generation at a time PER ACCOUNT, with a randomised pause between
-// them. Several accounts are several people, each at their own Chrome, all working at once from one shared line.
-// Image scenes marked parallel go out together inside one account's worker (the pause between sends lives in the driver),
-// and the pause below comes before the next batch.
+// Flow is driven like a careful person would: one generation at a time PER (ACCOUNT, LANE), with a randomised pause
+// between them. Several accounts are several people, each at their own Chrome, and each site (Flow / Flow Music) has
+// its own window and lane so a song never waits behind a video.
+// Image scenes marked parallel go out together inside one account's flow worker (the pause between sends lives in the
+// driver), and the pause below comes before the next batch.
 const PAUSE_MIN_MS = Number(process.env.FLOW_MCP_PAUSE_MIN_S ?? 25) * 1000;
 const PAUSE_MAX_MS = Number(process.env.FLOW_MCP_PAUSE_MAX_S ?? 70) * 1000;
+const MUSIC_PAUSE_MIN_MS = Number(process.env.FLOW_MCP_MUSIC_PAUSE_MIN_S ?? process.env.FLOW_MCP_PAUSE_MIN_S ?? 25) * 1000;
+const MUSIC_PAUSE_MAX_MS = Number(process.env.FLOW_MCP_MUSIC_PAUSE_MAX_S ?? process.env.FLOW_MCP_PAUSE_MAX_S ?? 70) * 1000;
 // A batch counts on its new tiles staying in the part of the grid Flow keeps mounted at the top (30+ tiles seen).
 const BATCH_MAX = 6;
 // An account found not ready (signed out, no project open) is left alone this long before it is checked again.
@@ -92,6 +100,7 @@ const RECHECK_MS = 60_000;
 
 interface Worker {
   account: string;
+  lane: Lane;
   working: boolean;
   lastFinished: number;
   pausedReason: string | null;
@@ -99,6 +108,8 @@ interface Worker {
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const laneOf = (job: Job): Lane => job.params.lane ?? "flow";
+const workerKey = (account: string, lane: Lane) => `${account.toLowerCase()}:${lane}`;
 
 export class JobQueue {
   private jobs = new Map<string, Job>();
@@ -110,6 +121,10 @@ export class JobQueue {
     private runner: JobRunner,
     private hooks: QueueHooks,
   ) {}
+
+  private worker(account: string, lane: Lane): Worker | undefined {
+    return this.workers.get(workerKey(account, lane));
+  }
 
   add(params: SceneParams): Job {
     const job: Job = {
@@ -131,21 +146,28 @@ export class JobQueue {
     return this.list().some((j) => j.status === "running");
   }
 
-  // Whether this account's Chrome is in the middle of a job: direct calls (assets, characters...) must wait for it.
-  busyOn(account: string): boolean {
-    return this.list().some((j) => j.status === "running" && j.account !== undefined && same(j.account, account));
+  // Whether this account's window for `lane` is in the middle of a job: direct calls on that site must wait for it.
+  busyOn(account: string, lane: Lane = "flow"): boolean {
+    return this.list().some((j) => j.status === "running" && j.account !== undefined && same(j.account, account) && laneOf(j) === lane);
   }
 
   get pausedReason(): string | null {
-    const several = this.hooks.accounts().length > 1;
-    const waits = [...this.workers.values()].filter((w) => w.pausedReason).map((w) => (several ? `${w.account}: ${w.pausedReason}` : w.pausedReason));
+    const severalAccounts = this.hooks.accounts().length > 1;
+    const allWorkers = [...this.workers.values()];
+    const hasOtherLane = allWorkers.some((w) => w.lane !== "flow" && (w.working || w.pausedReason));
+    const waits = allWorkers
+      .filter((w) => w.pausedReason)
+      .map((w) => {
+        const prefix = [severalAccounts ? w.account : "", hasOtherLane ? w.lane : ""].filter(Boolean).join("/");
+        return prefix ? `${prefix}: ${w.pausedReason}` : w.pausedReason!;
+      });
     return waits.length ? waits.join(" · ") : null;
   }
 
-  // What one account is doing, for flow_status and flow_accounts.
-  workerView(account: string): { busy: boolean; pacing: string | null; not_ready?: string } {
-    const w = this.workers.get(account);
-    return { busy: this.busyOn(account), pacing: w?.pausedReason ?? null, ...(w?.notReady ? { not_ready: w.notReady.hint } : {}) };
+  // What one account is doing on a lane, for flow_status and flow_accounts.
+  workerView(account: string, lane: Lane = "flow"): { busy: boolean; pacing: string | null; not_ready?: string } {
+    const w = this.worker(account, lane);
+    return { busy: this.busyOn(account, lane), pacing: w?.pausedReason ?? null, ...(w?.notReady ? { not_ready: w.notReady.hint } : {}) };
   }
 
   get(id: string): Job | undefined {
@@ -179,12 +201,16 @@ export class JobQueue {
     return job;
   }
 
-  // Wakes a worker for every enabled account; each stops by itself when there is nothing it can take.
+  // Wakes a worker for every enabled account on every lane that has queued work; each stops when its lane is empty.
   kick(): void {
+    const activeLanes = new Set<Lane>(this.list().filter((j) => j.status === "queued").map(laneOf));
     for (const account of this.hooks.accounts()) {
-      let w = this.workers.get(account);
-      if (!w) this.workers.set(account, (w = { account, working: false, lastFinished: 0, pausedReason: null }));
-      if (!w.working) void this.work(w);
+      for (const lane of activeLanes) {
+        const key = workerKey(account, lane);
+        let w = this.workers.get(key);
+        if (!w) this.workers.set(key, (w = { account, lane, working: false, lastFinished: 0, pausedReason: null }));
+        if (!w.working) void this.work(w);
+      }
     }
   }
 
@@ -222,19 +248,19 @@ export class JobQueue {
     }
   }
 
-  // The next run of jobs this worker may take: up to BATCH_MAX consecutive eligible parallel image jobs, or one single
-  // job otherwise. An account that is not ready leaves unpinned work to the others - unless none is ready, when the
-  // first account takes it and fails it with the reason.
+  // The next run of jobs this worker may take on its lane: up to BATCH_MAX consecutive eligible parallel image jobs
+  // (flow lane only), or one single job otherwise. An account that is not ready on this lane leaves unpinned work to
+  // the others - unless none is ready on this lane, when the first account takes it and fails it with the reason.
   private nextBatch(w: Worker): Job[] {
     const accounts = this.hooks.accounts();
-    const anyReady = accounts.some((a) => !this.workers.get(a)?.notReady);
+    const anyReady = accounts.some((a) => !this.worker(a, w.lane)?.notReady);
     const takesUnpinned = !w.notReady || (!anyReady && accounts[0] === w.account);
     const eligible = this.list().filter((j) => {
-      if (j.status !== "queued" || this.claimed.has(j.id) || this.waitingOn(j) !== "ready") return false;
+      if (j.status !== "queued" || laneOf(j) !== w.lane || this.claimed.has(j.id) || this.waitingOn(j) !== "ready") return false;
       return j.params.account ? same(j.params.account, w.account) : takesUnpinned;
     });
     if (!eligible.length) return [];
-    if (!this.hooks.batchRunner || !eligible[0].params.parallel) return [eligible[0]];
+    if (w.lane !== "flow" || !this.hooks.batchRunner || !eligible[0].params.parallel) return [eligible[0]];
     const end = eligible.findIndex((j) => !j.params.parallel);
     return eligible.slice(0, end < 0 ? BATCH_MAX : Math.min(end, BATCH_MAX));
   }
@@ -242,7 +268,7 @@ export class JobQueue {
   private handleUnusualActivity(w: Worker, error: string): void {
     const singleAccount = this.hooks.accounts().length <= 1;
     w.notReady = { hint: error, at: Date.now() };
-    for (const other of this.list().filter((j) => j.status === "queued")) {
+    for (const other of this.list().filter((j) => j.status === "queued" && laneOf(j) === w.lane)) {
       if (!singleAccount && (!other.params.account || !same(other.params.account, w.account))) continue;
       other.status = "failed";
       other.error = 'Stopped because Flow reported "unusual activity" on the job before this. Resolve it in the Flow window, then use flow_retry.';
@@ -253,16 +279,16 @@ export class JobQueue {
   private async work(w: Worker): Promise<void> {
     if (w.working) return;
     w.working = true;
-    const minMs = this.hooks.pauseMinMs ?? PAUSE_MIN_MS;
-    const maxMs = this.hooks.pauseMaxMs ?? PAUSE_MAX_MS;
+    const minMs = w.lane === "music" ? (this.hooks.musicPauseMinMs ?? this.hooks.pauseMinMs ?? MUSIC_PAUSE_MIN_MS) : (this.hooks.pauseMinMs ?? PAUSE_MIN_MS);
+    const maxMs = w.lane === "music" ? (this.hooks.musicPauseMaxMs ?? this.hooks.pauseMaxMs ?? MUSIC_PAUSE_MAX_MS) : (this.hooks.pauseMaxMs ?? PAUSE_MAX_MS);
     try {
       for (;;) {
         if (!this.hooks.accounts().some((a) => same(a, w.account))) return; // disabled meanwhile
         this.failStuck();
         // An account that was not ready is checked again now and then: the user may have signed it in since.
         if (w.notReady && Date.now() - w.notReady.at > RECHECK_MS) w.notReady = undefined;
-        if (!w.notReady && this.list().some((j) => j.status === "queued" && !this.claimed.has(j.id))) {
-          const hint = await this.hooks.ready(w.account).catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
+        if (!w.notReady && this.list().some((j) => j.status === "queued" && laneOf(j) === w.lane && !this.claimed.has(j.id))) {
+          const hint = await this.hooks.ready(w.account, w.lane).catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
           if (hint) {
             w.notReady = { hint, at: Date.now() };
             this.kick(); // the other accounts take over what this one cannot do
@@ -292,9 +318,9 @@ export class JobQueue {
         } finally {
           for (const j of batch) this.claimed.delete(j.id);
         }
-        if (live.length > 1 && this.hooks.batchRunner) {
+        if (live.length > 1 && w.lane === "flow" && this.hooks.batchRunner) {
           // A whole-batch failure may come after some images were sent: those are in Flow (free), not lost.
-          const results = await this.hooks.batchRunner(live, w.account).catch((err: unknown) => live.map(() => (err instanceof Error ? err : new Error(String(err)))));
+          const results = await this.hooks.batchRunner(live, w.account, w.lane).catch((err: unknown) => live.map(() => (err instanceof Error ? err : new Error(String(err)))));
           let blockedError: string | undefined;
           for (const [i, j] of live.entries()) {
             const r = results[i];
@@ -316,7 +342,7 @@ export class JobQueue {
         }
         const job = live[0];
         try {
-          job.files = await this.runner(job, w.account);
+          job.files = await this.runner(job, w.account, w.lane);
           job.status = "done";
           job.error = undefined;
         } catch (err) {

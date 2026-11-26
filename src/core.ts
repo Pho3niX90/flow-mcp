@@ -637,19 +637,22 @@ export class LocalCore implements Core {
       .map((j) => ({ id: j.id, scene: j.params.file_stem, ...(j.account ? { account: j.account } : {}) }));
   }
 
-  // One worker per enabled account, all running at once; each job runs inside its account, so every Flow step it takes
-  // (getFlowPage, downloads) goes to that account's own Chrome.
+  // One worker per (enabled account, lane), all running at once; each job runs inside its account, so every browser
+  // step (getFlowPage, downloads) goes to that account's own Chrome.
   private queue: JobQueue = new JobQueue((job, account) => onAccount(account, () => this.run(job)), {
     accounts: () => enabledAccounts().map((a) => a.name),
-    ready: (account) =>
-      onAccount(account, async () => {
+    ready: (account, lane) => {
+      if (lane === "music") return Promise.resolve(undefined);
+      return onAccount(account, async () => {
         const state = await getFlowState();
         return state.signedIn && state.inProject ? undefined : state.hint;
-      }),
+      });
+    },
     batchRunner: (jobs, account) => onAccount(account, () => runImageBatch(jobs)),
   });
 
   private async run(job: Job): Promise<string[]> {
+    if (job.params.lane === "music") throw new Error("Flow Music generation is not available yet.");
     const { chain_from, reference_from } = job.params;
     if (reference_from) {
       const still = this.queue.get(reference_from)?.files.find((f) => /\.(jpe?g|png|webp)$/i.test(f));
