@@ -96,8 +96,11 @@ winget install Git.Git
 winget install Google.Chrome
 ```
 
-Then close and reopen PowerShell. Captions on Windows also need `whisper-cli.exe` from the
-[whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), somewhere on your PATH. Skip it if
+Then close and reopen PowerShell. Captions on Windows also need `whisper-cli.exe` — there is no installer,
+so download `whisper-blas-bin-x64.zip` from the
+[whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) (if the newest release has no
+Windows zip, take the latest release that does), take `whisper-cli.exe` from its `Release` folder, and
+either place it on your PATH or set `FLOW_MCP_WHISPER` to the full path of `whisper-cli.exe`. Skip it if
 you don't want captions.
 
 ### B2. Get Flow MCP

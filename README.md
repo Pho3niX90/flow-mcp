@@ -32,7 +32,7 @@ New here? [GETTING-STARTED.md](GETTING-STARTED.md) takes you from nothing to you
 | **A Google account** | Free. Flow gives every account 50 credits a day; a paid Google AI plan adds more and unlocks 1080p downloads. Developed on a Pro plan |
 | **FFmpeg** *(optional)* | Mac: `brew install ffmpeg` · Windows: `winget install Gyan.FFmpeg` · Linux: `sudo apt install ffmpeg`. Needed only to join clips, mix music or record narration |
 | **A Google AI Studio key** *(optional, free)* | Only for the Google narration voices. See below |
-| **whisper.cpp** *(optional, free)* | Only for captions: it hears the words, on your computer. Mac: `brew install whisper-cpp` · Windows: `whisper-cli.exe` from [the whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), on your PATH · Linux: `sudo apt install whisper.cpp` (Debian, Ubuntu and Kali package it; `FLOW_MCP_WHISPER` points at it if your distribution names the binary differently). The speech model it needs downloads by itself the first time you caption a video: 148 MB for English, 574 MB for any other language |
+| **whisper.cpp** *(optional, free)* | Only for captions: it hears the words, on your computer. Mac: `brew install whisper-cpp` · Windows: there is no installer — download `whisper-blas-bin-x64.zip` from [the whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) (if the newest release has no Windows zip, take the latest release that does), extract `whisper-cli.exe` from its `Release` folder, and either put it on your PATH or point `FLOW_MCP_WHISPER` straight at the `.exe` · Linux: `sudo apt install whisper.cpp` (Debian, Ubuntu and Kali package it; `FLOW_MCP_WHISPER` points at it if your distribution names the binary differently). The speech model it needs downloads by itself the first time you caption a video: 148 MB for English, 574 MB for any other language |
 
 A display must stay awake: the Chrome window is really being driven, so the machine cannot be
 headless or asleep mid-run.
@@ -344,7 +344,9 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 | A clip generated but no file arrived | The media is still in Flow. `flow_download` pulls it back for nothing. Never re-generate and pay twice |
 | Everything times out | The Chrome window was closed, or the machine slept. Reopen it with `npm run login` |
 | Linux: `npm install` fails in `onnxruntime-node` with *"Failed to download the binaries: 404"* | Its installer wants GPU files that are no longer published. This repository's `.npmrc` skips them; if your npm ignores that, run `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install` |
-| `connectOverCDP`: *"Browser context management is not supported"* | Seen on Chrome 156; update Google Chrome to a newer version |
+| *"Could not attach to Chrome: this is Chrome 156..."* (`Browser context management is not supported`) | Chrome 156 refuses a call Playwright makes when attaching. Update Google Chrome (this does not happen on Chrome 158+) and try again |
+| *"Chrome is translating Flow's page..."* | Chrome's auto-translate rewrites button labels so selectors miss, even when the page still looks English. Click the translate icon in the Flow Chrome address bar and choose never to translate this site, or close Flow's Chrome window so it reopens with translation off |
+| *"This account shows Flow's agent-only composer..."* | Google is serving a composer variant with no per-generation settings controls to that account; nothing was generated or charged. `flow_agent_images` may still work for stills. Please open an issue at [Pho3niX90/flow-mcp/issues](https://github.com/Pho3niX90/flow-mcp/issues) with your Google AI plan and the date so it can be mapped |
 | Every click takes seconds and jobs crawl | Flow's Chrome window was opened by an older version. Chrome slows a window that is covered by other windows to one frame a second, and this version starts Chrome so that it does not. Close Flow's Chrome window; the next job opens it again |
 | A job is slow or stops and you cannot tell where | Start it with `FLOW_MCP_TRACE=1` and read the steps and their times in the log |
 
@@ -354,6 +356,24 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 
 Tell your assistant: *"Update Flow MCP: in my flow-mcp folder, run git pull, then npm install, then npm run
 build."* Then fully quit and reopen your assistant app so it loads the new version.
+
+---
+
+## Security
+
+- **Flow's Chrome remote-control port:** to drive Flow, this tool starts its dedicated Chrome window with a
+  remote-debugging port (`--remote-debugging-port`) listening on `127.0.0.1` (this computer only) with no
+  password. While that window is open, any program running on your computer can reach that port and drive
+  the signed-in Google session.
+- **Control panel API:** Flow Studio's HTTP API also listens on `127.0.0.1` only and requires a per-run token
+  saved in `~/.flow-mcp/token`.
+- **File and folder boundaries:** downloads go to a dedicated folder under `~/.flow-mcp/`; if Chrome ever
+  falls back to your own `~/Downloads` folder, a file is taken only with proof that it came from Flow, so
+  unrelated downloads are never touched. Project names like `..` are refused so outputs can never be written
+  outside your output folder.
+- **Practical advice:** use a dedicated Google account kept for Flow MCP, close Flow's Chrome window when it
+  is not in use (`flow-studio stop` closes it for you), keep two-step verification turned on, and install from
+  a commit you have reviewed rather than updating blindly.
 
 ---
 
@@ -404,6 +424,20 @@ which would have let a job spend past its limit).
 - Working files follow `FLOW_MCP_HOME` to another drive.
 - `npm install` works on Linux again (a dependency's GPU download had started failing the whole install).
 - Tests: `npm test` runs them, and they run on Windows, macOS and Linux for every change.
+
+**Upstream issues addressed.** Numbers link to [GTAI-1/flow-mcp](https://github.com/GTAI-1/flow-mcp/issues).
+
+- [#3](https://github.com/GTAI-1/flow-mcp/issues/3), [#37](https://github.com/GTAI-1/flow-mcp/issues/37), [#43](https://github.com/GTAI-1/flow-mcp/issues/43): agent switch matched across all UI variants, with no 30-second wait when the toggle is absent.
+- [#4](https://github.com/GTAI-1/flow-mcp/issues/4): Flow pinned to English (`?hl=en`); Chrome page translation disabled on launch and detected if already active.
+- [#18](https://github.com/GTAI-1/flow-mcp/issues/18), [#24](https://github.com/GTAI-1/flow-mcp/issues/24): docked agent side panel closed automatically; the agent-only composer variant fails fast with a clear message (not yet supported for single generations).
+- [#19](https://github.com/GTAI-1/flow-mcp/issues/19): tiles identified by media id instead of title or grid position.
+- [#20](https://github.com/GTAI-1/flow-mcp/issues/20): project tools (`flow_projects`, `flow_new_project`, `flow_open_project`, `flow_rename_project`).
+- [#22](https://github.com/GTAI-1/flow-mcp/issues/22): clear Chrome 156 error message advising an update to Chrome 158+.
+- [#26](https://github.com/GTAI-1/flow-mcp/issues/26): Library collections listed, walked recursively, and downloaded.
+- [#28](https://github.com/GTAI-1/flow-mcp/issues/28): all four parts addressed (Downloads folder provenance checks, Security section above, safe project folder names, `LICENSE` and dependency audit fixes).
+- [#39](https://github.com/GTAI-1/flow-mcp/issues/39): ISC licence text added in [LICENSE](LICENSE).
+- [#40](https://github.com/GTAI-1/flow-mcp/issues/40): too little detail in the report to reproduce directly; the rendering speed and stability fixes here may cover it.
+- [#42](https://github.com/GTAI-1/flow-mcp/issues/42): docked agent side panel closed, Flow Studio plan and credit pills survive reloads, and Windows `whisper.cpp` notes added (a Studio language picker is welcome as a pull request).
 
 ## Licence and risk
 
