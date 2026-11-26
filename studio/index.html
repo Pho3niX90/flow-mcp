@@ -29,6 +29,9 @@ h1{font:900 clamp(34px,8.5vw,52px)/.9 var(--display);letter-spacing:.01em;text-t
 h1 span{color:var(--tally)}
 .status{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:700 15px var(--mono)}
 .hdr-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.acc-wrap{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center}
+.acc-wrap select{width:auto;min-height:38px;padding:4px 34px 4px 12px;border-radius:99px;font:700 14px var(--mono);background-color:var(--ink2)}
+.model-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-top:6px}
 .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:2px solid var(--line);border-radius:99px;background:var(--ink2);max-width:100%}
 .pill.cached{color:var(--dim);border-style:dashed}
 .pillbtn{font:700 14px var(--mono);color:var(--bone);cursor:pointer;text-transform:uppercase;letter-spacing:.05em}
@@ -204,6 +207,7 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
     <h1>Flow <span>Studio</span></h1>
     <div class="hdr-right">
       <div class="status" id="status"><span class="pill"><i class="tally"></i>Connecting…</span></div>
+      <span class="acc-wrap" id="accWrap" hidden><select id="accSelect" aria-label="Account"></select><button type="button" class="pill pillbtn" id="accBtn">Accounts</button></span>
       <button type="button" class="pill pillbtn" id="projBtn" hidden>Projects</button>
     </div>
   </header>
@@ -261,6 +265,12 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           <div id="f_parallelWrap">
             <label class="check"><input type="checkbox" id="f_parallel">Send together</label>
             <p class="empty" id="f_parallelNote" style="margin-top:4px"></p>
+          </div>
+          <label class="f" for="f_model">Image model</label>
+          <select id="f_model"><option value="">Default</option></select>
+          <div class="model-row">
+            <span class="empty" id="f_modelDefault">Default: latest (the newest Nano Banana)</span>
+            <button type="button" class="btn small ghost" id="f_modelChange">Change default</button>
           </div>
         </div>
         <h2 style="margin-top:18px">Frames <small id="f_count"></small></h2>
@@ -576,6 +586,29 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
     </div>
   </div>
 </dialog>
+<dialog id="accDlg">
+  <div class="dlg-head">
+    <h2 style="margin:0">Accounts</h2>
+    <div class="rowbtns" style="margin-top:0">
+      <button type="button" class="btn small ghost" id="accReload">Refresh</button>
+      <button type="button" class="btn small" id="accClose">Close</button>
+    </div>
+  </div>
+  <p class="empty" id="accInfo" style="margin-top:8px"></p>
+  <div class="lib" id="accList"></div>
+  <div class="phrase" id="accAddNote" style="margin-top:14px">To add another Google account, run <b>npm run login -- &lt;name&gt;</b> in a terminal, sign in to Google in the Chrome window that opens, and open a Flow project. Signing in cannot be done from the panel.</div>
+</dialog>
+<dialog id="imgModelDlg">
+  <div class="dlg-head">
+    <h2 style="margin:0">Default image model</h2>
+    <div class="rowbtns" style="margin-top:0">
+      <button type="button" class="btn small ghost" id="imgModelReload">Refresh</button>
+      <button type="button" class="btn small" id="imgModelClose">Close</button>
+    </div>
+  </div>
+  <p class="empty" id="imgModelInfo" style="margin-top:8px"></p>
+  <div class="lib" id="imgModelList"></div>
+</dialog>
 <input type="file" id="file" hidden>
 <script>
 const TOKEN = "__FLOW_TOKEN__";
@@ -583,8 +616,18 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const LIVE = location.protocol.startsWith("http") && TOKEN !== "__FLOW_" + "TOKEN__";
+const ACCOUNT_METHODS = new Set([
+  "generate", "assets", "download", "agent", "cutout", "edit", "continue_shot",
+  "trash", "rename", "characters", "image_models", "character_edit",
+  "projects", "new_project", "open_project", "rename_project", "character",
+  "music_status", "music", "music_songs", "music_download",
+]);
+let ACCOUNTS = [], IMAGE_MODELS = [], currentImageModel = "", lastStatus = null;
+const activeAccount = () => (ACCOUNTS.length > 1 && S.account ? S.account : undefined);
 const api = async (method, body = {}) => {
-  const res = await fetch(`/api/${method}`, { method: "POST", headers: { "content-type": "application/json", "x-flow-token": TOKEN }, body: JSON.stringify(body) });
+  const acc = activeAccount();
+  const payload = acc && ACCOUNT_METHODS.has(method) && body && body.account === undefined ? { ...body, account: acc } : body;
+  const res = await fetch(`/api/${method}`, { method: "POST", headers: { "content-type": "application/json", "x-flow-token": TOKEN }, body: JSON.stringify(payload) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -601,7 +644,8 @@ const VIDEO_COST = { "Omni 1.2 Flash": omni12, "Omni 1.1 Flash": { "360p": { 4: 
 const blank = () => ({ prompt: "", technique: "", chain: false, match: false, first: null, last: null, refs: [] });
 const DEFAULTS = {
   tab: "cast",
-  frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", parallel: false, scenes: [blank()] },
+  account: "",
+  frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", parallel: false, model: "", scenes: [blank()] },
   cutout: { prompt: "", aspect: "1:1" },
   shots: { project: "MyFilm", model: "Omni 1.2 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 25, scenes: [blank()] },
   narrate: { project: "MyFilm", engine: "kokoro", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
@@ -615,6 +659,8 @@ const S = (() => {
   const merged = Object.assign(structuredClone(DEFAULTS), stored);
   merged.frames = Object.assign(structuredClone(DEFAULTS.frames), merged.frames || {});
   merged.frames.parallel = Boolean(merged.frames.parallel);
+  if (typeof merged.frames.model !== "string") merged.frames.model = "";
+  if (typeof merged.account !== "string") merged.account = "";
   merged.cutout = Object.assign(structuredClone(DEFAULTS.cutout), merged.cutout || {});
   merged.music = Object.assign(structuredClone(DEFAULTS.music), merged.music || {});
   if (!Array.isArray(merged.music.formats) || !merged.music.formats.length) merged.music.formats = ["m4a"];
@@ -900,6 +946,7 @@ $("#co_go").onclick = async () => {
       aspect_ratio: S.cutout.aspect,
       ...(prompt ? { prompt } : {}),
       ...(cutoutImage ? { image: cutoutImage.asset ? `asset:${cutoutImage.asset}` : cutoutImage.path } : {}),
+      ...(S.frames.model ? { model: S.frames.model } : {}),
     });
     $("#co_info").textContent = "Queued two takes (white and black) — watch the Monitor.";
     toast("Cut-out queued.");
@@ -1503,7 +1550,7 @@ $("#roll").onclick = async () => {
   if (!list.length) return;
   const ref = (v) => (v ? (v.asset ? `asset:${v.asset}` : v.path) : undefined);
   if (!video && cfg.engine === "agent") {
-    try { await api("agent", { project: cfg.project, scenes: list.map((s) => s.prompt.trim()), aspect_ratio: cfg.aspect }); toast("Handed to Flow's agent."); poll(); } catch (err) { toast(err.message, true); }
+    try { await api("agent", { project: cfg.project, scenes: list.map((s) => s.prompt.trim()), aspect_ratio: cfg.aspect, ...(cfg.model ? { model: cfg.model } : {}) }); toast("Handed to Flow's agent."); poll(); } catch (err) { toast(err.message, true); }
     return;
   }
   const scenes = list.map((sc, i) => ({
@@ -1515,7 +1562,7 @@ $("#roll").onclick = async () => {
     reference_images: sc.refs.length ? sc.refs.map(ref) : undefined,
     ...(video
       ? { model: cfg.model, max_credits: cfg.max, download_quality: cfg.quality, ...(cfg.model.startsWith("Omni") ? { duration: cfg.duration, resolution: cfg.resolution } : {}), chain_previous: (i > 0 && sc.chain) || undefined, first_frame: sc.chain ? undefined : ref(sc.first), last_frame: ref(sc.last) }
-      : { max_credits: 0, reference_previous: (i > 0 && sc.match) || undefined }),
+      : { max_credits: 0, ...(cfg.model ? { model: cfg.model } : {}), reference_previous: (i > 0 && sc.match) || undefined }),
   }));
   const cost = video ? list.reduce((n, s) => n + sceneCost(s), 0) : 0;
   if (cost > 0 && !confirm(`Queue ${scenes.length} shot(s) for about ${cost} credits?`)) return;
@@ -1636,7 +1683,7 @@ async function afterProjectSwitch(msg) {
   try {
     await poll(true);
     if (flowInProject) {
-      await refreshCast(flowProject || "__open__");
+      await refreshCast(`${activeAccount() || ""}:${flowProject || "__open__"}`);
       if (libLoaded || S.tab === "library") await loadLib();
       else { LIB = []; chosen.clear(); renderLib(); }
     } else {
@@ -1770,8 +1817,152 @@ function renderHint(f) {
   $("#hint").innerHTML = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
 }
 
+/* ---------- accounts & image models ---------- */
+function renderImageModelSelect() {
+  const sel = $("#f_model"); if (!sel) return;
+  const opts = [...IMAGE_MODELS];
+  if (S.frames.model && !opts.includes(S.frames.model)) opts.push(S.frames.model);
+  sel.innerHTML = `<option value="">Default</option>` + opts.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  sel.value = S.frames.model || "";
+  if (currentImageModel) $("#f_modelDefault").textContent = `Default: ${currentImageModel}`;
+}
+$("#f_model").addEventListener("change", () => { S.frames.model = $("#f_model").value; save(); });
+
+async function loadImageModels() {
+  if (!guard()) return;
+  const b = $("#imgModelReload");
+  if (b) { b.disabled = true; b.textContent = "Loading…"; }
+  $("#imgModelInfo").textContent = "";
+  $("#imgModelList").innerHTML = `<p class="empty">Reading image models from Flow…</p>`;
+  try {
+    const out = await api("image_models");
+    IMAGE_MODELS = Array.isArray(out?.available) ? out.available : [];
+    const isLatest = out?.used_when_none_named && /newest Nano Banana/i.test(out.used_when_none_named);
+    currentImageModel = isLatest ? "latest (the newest Nano Banana)" : (out?.default_image_model || currentImageModel);
+    renderImageModelSelect();
+    $("#imgModelInfo").textContent = `Currently: ${out?.used_when_none_named || out?.default_image_model || "Default"}`;
+    const rows = [
+      `<button type="button" data-setimgmodel="latest" class="${isLatest ? "on" : ""}"><span>${isLatest ? "✓ " : ""}Latest (newest Nano Banana)</span><em>auto</em></button>`,
+      ...IMAGE_MODELS.map((m) => {
+        const on = !isLatest && out?.default_image_model === m;
+        return `<button type="button" data-setimgmodel="${esc(m)}" class="${on ? "on" : ""}"><span>${on ? "✓ " : ""}${esc(m)}</span><em>model</em></button>`;
+      }),
+    ];
+    $("#imgModelList").innerHTML = rows.join("");
+  } catch (err) {
+    $("#imgModelList").innerHTML = "";
+    $("#imgModelInfo").textContent = err.message;
+  }
+  if (b) { b.disabled = false; b.textContent = "Refresh"; }
+}
+$("#f_modelChange").onclick = () => {
+  if (!guard()) return;
+  if (!$("#imgModelDlg").open) $("#imgModelDlg").showModal();
+  loadImageModels();
+};
+$("#imgModelClose").onclick = () => $("#imgModelDlg").close();
+$("#imgModelReload").onclick = loadImageModels;
+$("#imgModelList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-setimgmodel]"); if (!b || !guard()) return;
+  const chosenModel = b.dataset.setimgmodel;
+  b.disabled = true;
+  $("#imgModelInfo").textContent = "Saving default…";
+  try {
+    const out = await api("image_models", { set_default: chosenModel });
+    const isLatest = out?.used_when_none_named && /newest Nano Banana/i.test(out.used_when_none_named);
+    currentImageModel = isLatest ? "latest (the newest Nano Banana)" : (out?.default_image_model || chosenModel);
+    renderImageModelSelect();
+    $("#imgModelDlg").close();
+    toast(`Default image model: ${currentImageModel}`);
+    poll();
+  } catch (err) {
+    $("#imgModelInfo").textContent = err.message;
+    toast(err.message, true);
+    b.disabled = false;
+  }
+});
+
+function accountStateText(a) {
+  if (!a.enabled) return "Disabled";
+  if (a.flow?.error) return a.flow.error;
+  if (a.flow && !a.flow.signedIn) return "Not signed in";
+  if (a.flow && !a.flow.inProject) return "No project open";
+  if (a.busy) return "Working";
+  if (a.not_ready) return a.not_ready;
+  return a.flow?.project ? `Ready · ${a.flow.project}` : "Ready";
+}
+async function loadAccounts() {
+  if (!guard()) return;
+  const b = $("#accReload");
+  if (b) { b.disabled = true; b.textContent = "Loading…"; }
+  $("#accInfo").textContent = "";
+  $("#accList").innerHTML = `<p class="empty">Checking accounts…</p>`;
+  try {
+    const out = await api("accounts", { action: "list" });
+    const list = Array.isArray(out?.accounts) ? out.accounts : [];
+    $("#accList").innerHTML = list.length
+      ? list.map((a) => `<div class="projrow${a.enabled ? " cur" : ""}"><div class="meta"><b>${esc(a.name)}</b><span class="badge ${a.enabled ? "done" : "cancelled"}">${a.enabled ? "enabled" : "disabled"}</span><span class="empty" style="width:100%">${esc(accountStateText(a))}</span></div><button type="button" class="btn small ghost" data-acctoggle="${esc(a.name)}" data-accnext="${a.enabled ? "disable" : "enable"}">${a.enabled ? "Disable" : "Enable"}</button></div>`).join("")
+      : `<p class="empty">No accounts found.</p>`;
+  } catch (err) {
+    $("#accList").innerHTML = "";
+    $("#accInfo").textContent = err.message;
+  }
+  if (b) { b.disabled = false; b.textContent = "Refresh"; }
+}
+$("#accBtn").onclick = () => {
+  if (!guard()) return;
+  if (!$("#accDlg").open) $("#accDlg").showModal();
+  loadAccounts();
+};
+$("#accClose").onclick = () => $("#accDlg").close();
+$("#accReload").onclick = loadAccounts;
+$("#accList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-acctoggle]"); if (!b || !guard()) return;
+  const name = b.dataset.acctoggle, action = b.dataset.accnext;
+  b.disabled = true;
+  $("#accInfo").textContent = "";
+  try {
+    await api("accounts", { action, name });
+    toast(`${name} ${action === "enable" ? "enabled" : "disabled"}`);
+    await loadAccounts();
+    await poll(true);
+  } catch (err) {
+    $("#accInfo").textContent = err.message;
+    toast(err.message, true);
+    b.disabled = false;
+  }
+});
+$("#accSelect").addEventListener("change", async () => {
+  S.account = $("#accSelect").value;
+  save();
+  renderStatus.plan = undefined; renderStatus.planLive = false;
+  renderStatus.credits = undefined; renderStatus.creditsLive = false;
+  if (lastStatus) renderStatus(lastStatus);
+  await afterProjectSwitch(`Switched to ${S.account}`);
+  if (musicStatusLoaded || S.tab === "music") loadMusicStatus();
+});
+
 function renderStatus(st) {
-  const f = st.flow ?? {}, active = st.jobs.some((j) => j.status === "running" || j.status === "queued");
+  lastStatus = st;
+  ACCOUNTS = Array.isArray(st.accounts) && st.accounts.length > 1 ? st.accounts : [];
+  if (ACCOUNTS.length > 1) {
+    if (!S.account || !ACCOUNTS.some((a) => a.name === S.account)) { S.account = ACCOUNTS[0].name; save(); }
+    $("#accWrap").hidden = false;
+    const accSig = ACCOUNTS.map((a) => a.name).join("\n");
+    if (renderStatus.accSig !== accSig) {
+      renderStatus.accSig = accSig;
+      $("#accSelect").innerHTML = ACCOUNTS.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join("");
+    }
+    $("#accSelect").value = S.account;
+  } else {
+    $("#accWrap").hidden = true;
+  }
+  if (st.image_model && st.image_model !== currentImageModel) {
+    currentImageModel = st.image_model;
+    $("#f_modelDefault").textContent = `Default: ${currentImageModel}`;
+  }
+  const activeAcc = ACCOUNTS.length > 1 ? ACCOUNTS.find((a) => a.name === S.account) : null;
+  const f = activeAcc?.flow ?? st.flow ?? {}, active = st.jobs.some((j) => j.status === "running" || j.status === "queued");
   busy = false;
   flowInProject = Boolean(f.signedIn && f.inProject);
   flowProject = flowInProject && f.project ? f.project : "";
@@ -1782,15 +1973,15 @@ function renderStatus(st) {
   let pillsChanged = false;
   if (f.credits_remaining !== undefined) { renderStatus.credits = f.credits_remaining; renderStatus.creditsLive = true; pillsChanged = true; }
   if (f.plan) { renderStatus.plan = f.plan; renderStatus.planLive = true; pillsChanged = true; }
-  if (pillsChanged) savePills(renderStatus.plan ?? savedPills.plan, renderStatus.credits ?? savedPills.credits);
-  const plan = renderStatus.plan ?? (f.signedIn ? savedPills.plan : undefined);
+  if (pillsChanged && ACCOUNTS.length <= 1) savePills(renderStatus.plan ?? savedPills.plan, renderStatus.credits ?? savedPills.credits);
+  const plan = renderStatus.plan ?? (f.signedIn && ACCOUNTS.length <= 1 ? savedPills.plan : undefined);
   const planCached = !renderStatus.planLive && plan !== undefined;
-  const credits = renderStatus.credits !== undefined ? renderStatus.credits : (f.signedIn ? savedPills.credits : undefined);
+  const credits = renderStatus.credits !== undefined ? renderStatus.credits : (f.signedIn && ACCOUNTS.length <= 1 ? savedPills.credits : undefined);
   const creditsCached = !renderStatus.creditsLive && credits !== undefined;
   $("#status").innerHTML = `<span class="pill"><i class="tally ${cls}"></i>${text}</span>${flowProject ? `<span class="pill" id="projPill" title="Open Flow project">${esc(flowProject)}</span>` : ""}${plan ? `<span class="pill${planCached ? " cached" : ""}">${esc(plan)}${planCached ? " (last known)" : ""}</span>` : ""}${credits !== undefined ? `<span class="pill${creditsCached ? " cached" : ""}">${credits.toLocaleString()} credits${creditsCached ? " (last known)" : ""}</span>` : ""}`;
   renderHint(f);
   if (flowInProject) {
-    const key = flowProject || "__open__";
+    const key = `${activeAcc ? activeAcc.name : ""}:${flowProject || "__open__"}`;
     if (!switchingProject && castLoadedFor !== key && !castLoading) refreshCast(key);
   } else if (castLoadedFor || CAST.length) {
     castLoadedFor = ""; CAST = []; renderCast();
@@ -1829,7 +2020,7 @@ async function poll(detailed = false) {
 function renderAll() {
   for (const [id, val] of [["f_project", S.frames.project], ["s_project", S.shots.project], ["n_project", S.narrate.project], ["m_project", S.music.project], ["c_project", S.cut.project], ["e_project", S.cut.project], ["l_project", S.cut.project]]) if ($("#" + id) && !$("#" + id).value) $("#" + id).value = val;
   $("#s_model").innerHTML = Object.keys(VIDEO_COST).map((m) => `<option ${m === S.shots.model ? "selected" : ""}>${m}</option>`).join("");
-  renderSegs(); renderScenes(); renderCutout(); renderCast(); renderNarrate(); renderMusic();
+  renderSegs(); renderScenes(); renderImageModelSelect(); renderCutout(); renderCast(); renderNarrate(); renderMusic();
   const mus = $('[data-slot="music"]'), vo = $('[data-slot="voiceover"]');
   if (mus) mus.outerHTML = slotHtml("music", 0, S.cut.music, "Music track");
   if (vo) vo.outerHTML = slotHtml("voiceover", 0, S.cut.voiceover, "Narration");
