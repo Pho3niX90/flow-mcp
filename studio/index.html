@@ -660,9 +660,13 @@ const api = async (method, body = {}) => {
   const payload = acc && ACCOUNT_METHODS.has(method) && body && body.account === undefined ? { ...body, account: acc } : body;
   const res = await fetch(`/api/${method}`, { method: "POST", headers: { "content-type": "application/json", "x-flow-token": TOKEN }, body: JSON.stringify(payload) });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw new Error(forPeople(data.error) || res.statusText);
   return data;
 };
+// Some of the server's messages are written for an AI assistant ("Call flow_open_project with one of: a | b").
+// Shown in the panel they tell a person to do something a person cannot do, so that part is put in panel terms.
+const forPeople = (msg) =>
+  typeof msg === "string" ? msg.replace(/\s*Call flow_open_project with one of:[^]*$/i, " Open one with Projects, at the top of the panel.") : msg;
 const media = (path) => `/media?token=${TOKEN}&path=${encodeURIComponent(path)}`;
 const toast = (msg, bad) => { const t = Object.assign(document.createElement("div"), { className: "toast" + (bad ? " bad" : ""), textContent: msg }); document.body.append(t); setTimeout(() => t.remove(), bad ? 7000 : 3200); };
 const guard = () => { if (!LIVE) { toast("Not connected — start Flow Studio first.", true); return false; } return true; };
