@@ -6,10 +6,10 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
 import { CONFIG, OUTPUT_ROOT } from "./config.js";
 import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand } from "./platform.js";
+import { FLOW_URL, MUSIC_URL, isSiteUrl, pickSiteUrlIndex, type Site } from "./sites.js";
 import { trace } from "./trace.js";
 
-export { HOME_DIR, OUTPUT_ROOT };
-export const FLOW_URL = "https://flow.google.com/";
+export { FLOW_URL, HOME_DIR, MUSIC_URL, OUTPUT_ROOT, type Site };
 // Flow's buttons are found by their English names ("Start generation", "Download"...), so Flow has to show in English
 // whatever language the Google account uses. `hl=en` on the address does that: `hl=es` turned every label Spanish on
 // an English account (2026-10-13), the choice holds through Flow's in-app navigation, and the browser's own language
@@ -19,7 +19,6 @@ export const inEnglish = (url: string): string => {
   u.searchParams.set("hl", "en");
   return u.toString();
 };
-const FLOW_HOSTS = /^https:\/\/(flow\.google\.com|labs\.google\/fx)/;
 export const PROFILE_DIR = join(HOME_DIR, "chrome-profile");
 // The port asked for. The one actually in use can differ when that one was taken; ownChrome() returns the real one.
 export const CDP_PORT = CONFIG.cdpPort;
@@ -286,15 +285,12 @@ export async function getFlowPage(account: Account = currentAccount()): Promise<
   if (!context) throw new Error(`Chrome for account "${account.name}" has no browser context; restart that Flow Chrome window.`);
   const wantedProject = process.env.FLOW_MCP_PROJECT ?? "";
   // FLOW_MCP_PROJECT (a project id) is a test hook: drive only that project's tab, never the one the real server uses.
-  const flowPages = context.pages().filter((p) => FLOW_HOSTS.test(p.url()) && (!wantedProject || p.url().includes(wantedProject)));
-  // A login launch can leave the Flow marketing page open beside the signed-in
-  // dashboard or a project. Prefer the project, then the dashboard, so status
-  // checks do not mistake `/about` for a signed-out session.
-  const existing =
-    flowPages.find((p) => /\/project\//.test(p.url())) ??
-    flowPages.find((p) => !/\/about(?:[/?#]|$)/.test(p.url())) ??
-    flowPages[0];
-  if (existing) {
+  // A login launch can leave the Flow marketing page open beside the signed-in dashboard or a project. Prefer the
+  // project, then the dashboard, so status checks do not mistake `/about` for a signed-out session.
+  const pages = context.pages();
+  const idx = pickSiteUrlIndex("flow", pages.map((p) => p.url()), { wantedProject });
+  if (idx >= 0) {
+    const existing = pages[idx];
     await ensureEnglish(existing);
     return existing;
   }
@@ -302,6 +298,47 @@ export async function getFlowPage(account: Account = currentAccount()): Promise<
   await page.goto(inEnglish(FLOW_URL), { waitUntil: "domcontentloaded" });
   await ensureEnglish(page);
   return page;
+}
+
+// Returns the account's open Flow Music page, or opens Flow Music in its OWN Chrome window so it keeps drawing at full
+// speed alongside Flow (a background tab in the same window is throttled by Chrome). Never navigates or focuses Flow's
+// tab, and does not apply Flow's `?hl=en` reload logic.
+export async function getMusicPage(account: Account = currentAccount()): Promise<Page> {
+  const b = await getBrowser(account);
+  const context = b.contexts()[0];
+  if (!context) throw new Error(`Chrome for account "${account.name}" has no browser context; restart that Flow Chrome window.`);
+  const pages = context.pages();
+  const idx = pickSiteUrlIndex("music", pages.map((p) => p.url()));
+  if (idx >= 0) {
+    const existing = pages[idx];
+    await checkNotTranslated(existing, "music");
+    return existing;
+  }
+  trace("getMusicPage: opening new Chrome window");
+  const session = await b.newBrowserCDPSession();
+  try {
+    await session.send("Target.createTarget", { url: MUSIC_URL, newWindow: true });
+  } finally {
+    await session.detach().catch(() => {});
+  }
+  const deadline = Date.now() + 15_000;
+  let found: Page | undefined;
+  while (Date.now() < deadline) {
+    const current = context.pages();
+    const hit = pickSiteUrlIndex("music", current.map((p) => p.url()));
+    if (hit >= 0) {
+      found = current[hit];
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!found || !isSiteUrl("music", found.url())) {
+    throw new Error(`Opened a new Chrome window for Flow Music (${MUSIC_URL}), but the page did not appear within 15 s.`);
+  }
+  await found.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => {});
+  await checkNotTranslated(found, "music");
+  trace("getMusicPage: window ready");
+  return found;
 }
 
 const TRANSLATED_HTML_CLASS_RE = /(?:^|\s)translated-(ltr|rtl)(?=\s|$)/i;
@@ -312,33 +349,48 @@ export function isTranslatedHtmlClass(className: string | null | undefined): boo
   return Boolean(className && TRANSLATED_HTML_CLASS_RE.test(className));
 }
 
-const TRANSLATED_PAGE_ERROR =
-  "Chrome is translating Flow's page, which rewrites button labels so flow-mcp cannot find them. " +
-  "In the Flow Chrome window, click the translate icon in the address bar and choose never to translate this site " +
-  "(or close that window so it is reopened with translation off), then run again.";
+function translatedPageError(site: Site): string {
+  const name = site === "music" ? "Flow Music" : "Flow";
+  return (
+    `Chrome is translating ${name}'s page, which rewrites button labels so flow-mcp cannot find them. ` +
+    "In the Flow Chrome window, click the translate icon in the address bar and choose never to translate this site " +
+    "(or close that window so it is reopened with translation off), then run again."
+  );
+}
+
+function readHtmlAttrs(page: Page): Promise<{ lang: string; className: string }> {
+  return page
+    .locator("html")
+    .evaluate((el) => ({ lang: el.getAttribute("lang") ?? "", className: el.getAttribute("class") ?? "" }), undefined, { timeout: 3000 })
+    .catch(() => ({ lang: "", className: "" }));
+}
+
+// Refuses a page that Chrome's auto-translator is rewriting. Shared across Flow and Flow Music.
+export async function checkNotTranslated(page: Page, site: Site = "flow"): Promise<void> {
+  const { className } = await readHtmlAttrs(page);
+  if (isTranslatedHtmlClass(className)) {
+    trace(`checkNotTranslated(${site}): Chrome page translation detected`);
+    throw new Error(translatedPageError(site));
+  }
+}
 
 // Reloads Flow in English when it is showing in another language (a page the user opened by hand, or Flow redirecting
 // to an address without hl), and refuses pages being rewritten by Chrome's auto-translator. Sign-in pages are left alone.
 export async function ensureEnglish(page: Page): Promise<void> {
   if (!/^https:\/\/flow\.google\.com\//.test(page.url())) return;
-  const readHtml = () =>
-    page
-      .locator("html")
-      .evaluate((el) => ({ lang: el.getAttribute("lang") ?? "", className: el.getAttribute("class") ?? "" }), undefined, { timeout: 3000 })
-      .catch(() => ({ lang: "", className: "" }));
-  const now = await readHtml();
+  const now = await readHtmlAttrs(page);
   if (isTranslatedHtmlClass(now.className)) {
     trace("ensureEnglish: Chrome page translation detected");
-    throw new Error(TRANSLATED_PAGE_ERROR);
+    throw new Error(translatedPageError("flow"));
   }
   if (!now.lang || /^en\b/i.test(now.lang)) return;
   trace(`ensureEnglish: reloading from lang="${now.lang}"`);
   await page.goto(inEnglish(page.url()), { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.documentElement.lang, null, { timeout: 15_000 }).catch(() => {});
-  const after = await readHtml();
+  const after = await readHtmlAttrs(page);
   if (isTranslatedHtmlClass(after.className)) {
     trace("ensureEnglish: Chrome page translation detected after reload");
-    throw new Error(TRANSLATED_PAGE_ERROR);
+    throw new Error(translatedPageError("flow"));
   }
   if (after.lang && !/^en\b/i.test(after.lang)) {
     throw new Error(
