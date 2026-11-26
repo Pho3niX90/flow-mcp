@@ -99,3 +99,47 @@ test("JobQueue waits for dependencies, propagates failures, and handles disabled
   assert.equal(disabled.status, "failed");
   assert.match(disabled.error ?? "", /disabled/);
 });
+
+test("JobQueue groups consecutive parallel image scenes into batches of up to 6 inside per-account workers", async () => {
+  const batches = [];
+  const singles = [];
+
+  const queue = new JobQueue(
+    async (job, account) => {
+      singles.push(`${job.params.file_stem}@${account}`);
+      return [`${job.params.file_stem}.png`];
+    },
+    {
+      accounts: () => ["main", "acc2"],
+      ready: async () => undefined,
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
+      batchRunner: async (jobs, account) => {
+        batches.push({ account, stems: jobs.map((j) => j.params.file_stem) });
+        await sleep(30);
+        return jobs.map((j) => (j.params.file_stem === "scene-03" ? new Error("scene 3 failed") : [`${j.params.file_stem}.png`]));
+      },
+    },
+  );
+
+  // Queue 8 parallel scenes plus 1 non-parallel scene in one synchronous turn (testing setImmediate batch formation).
+  const jobs = [];
+  for (let i = 1; i <= 8; i++) jobs.push(queue.add(baseParams(`scene-0${i}`, { parallel: true })));
+  jobs.push(queue.add(baseParams("scene-09")));
+
+  await waitUntil(() => jobs.every((j) => j.status === "done" || j.status === "failed"));
+
+  // Batch 1 on main takes up to 6 (scenes 1..6); acc2 takes scenes 7..8 in parallel; scene 9 runs alone.
+  assert.equal(batches.length, 2);
+  assert.deepEqual(batches[0].stems, ["scene-01", "scene-02", "scene-03", "scene-04", "scene-05", "scene-06"]);
+  assert.deepEqual(batches[1].stems, ["scene-07", "scene-08"]);
+  assert.equal(new Set(batches.map((b) => b.account)).size, 2);
+  assert.equal(singles.length, 1);
+  assert.match(singles[0], /^scene-09@/);
+
+  // Per-job failure inside a batch does not fail sibling scenes.
+  assert.equal(jobs[2].status, "failed");
+  assert.match(jobs[2].error ?? "", /scene 3 failed/);
+  assert.equal(jobs[0].status, "done");
+  assert.equal(jobs[7].status, "done");
+});
