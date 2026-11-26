@@ -816,6 +816,7 @@ export class LocalCore implements Core {
   // difference matte turns the pair into a PNG with real transparency, soft edges included.
   async cutout({ project, prompt, image, aspect_ratio, model, download_quality }: Args<"cutout">) {
     if (!prompt && !image) throw new Error("Pass `prompt` (Flow draws the subject) or `image` (cut out a picture you already have).");
+    if (image && !image.startsWith("asset:") && !existsSync(image)) throw new Error(`Image not found: ${image}`);
     const output_dir = projectDir(project);
     const stem = this.nextStem(output_dir, "cutout");
     const shared = { type: "image" as const, max_credits: 0, aspect_ratio, model, download_quality, output_dir };

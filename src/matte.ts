@@ -1,10 +1,10 @@
 import { execFile, spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { promisify } from "node:util";
-import { FFMPEG_HINT } from "./platform.js";
+import { FFMPEG_HINT, ffmpeg, ffprobe } from "./platform.js";
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
-const FFPROBE = process.env.FLOW_MCP_FFPROBE ?? "ffprobe";
 
 // Difference matting: the same picture drawn once on white and once on black. A fully opaque pixel looks the same on
 // both, a fully clear one is exactly the background on each, and anything in between (hair, glass, soft shadows) sits
@@ -17,7 +17,7 @@ const NOISE = 0.04;
 const MAX_PIXELS = 4096 * 4096;
 
 async function size(file: string): Promise<{ width: number; height: number }> {
-  const { stdout } = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", file]).catch(
+  const { stdout } = await run(ffprobe(), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", file]).catch(
     (err: NodeJS.ErrnoException) => {
       throw new Error(err.code === "ENOENT" ? `Cutouts need ffmpeg (${FFMPEG_HINT}).` : `Could not read the image ${file}.`);
     },
@@ -31,7 +31,7 @@ async function size(file: string): Promise<{ width: number; height: number }> {
 // still lines up pixel for pixel.
 async function pixels(file: string, width: number, height: number): Promise<Buffer> {
   const { stdout } = await run(
-    FFMPEG,
+    ffmpeg(),
     ["-v", "error", "-i", file, "-vf", `scale=${width}:${height}:flags=lanczos`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
     { encoding: "buffer", maxBuffer: MAX_PIXELS * 3 + 1024 },
   );
@@ -40,10 +40,12 @@ async function pixels(file: string, width: number, height: number): Promise<Buff
 }
 
 function writePng(rgba: Buffer, width: number, height: number, out: string): Promise<void> {
+  mkdirSync(dirname(out), { recursive: true });
   return new Promise((ok, fail) => {
-    const ff = spawn(FFMPEG, ["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "rgba", out]);
+    const ff = spawn(ffmpeg(), ["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "rgba", out]);
     let err = "";
     ff.stderr.on("data", (d: Buffer) => (err += d));
+    ff.stdin.on("error", () => {});
     ff.on("error", fail);
     ff.on("close", (code) => (code === 0 ? ok() : fail(new Error(`ffmpeg could not write ${out}: ${err.trim()}`))));
     ff.stdin.end(rgba);
@@ -51,7 +53,7 @@ function writePng(rgba: Buffer, width: number, height: number, out: string): Pro
 }
 
 // Median of each channel over a thin ring along the edges: mostly background even when the subject touches a side.
-function borderColour(px: Buffer, width: number, height: number): [number, number, number] {
+export function borderColour(px: Uint8Array, width: number, height: number): [number, number, number] {
   const ring = Math.max(2, Math.round(Math.min(width, height) * 0.02));
   const ch: number[][] = [[], [], []];
   const take = (x: number, y: number) => {
@@ -66,8 +68,7 @@ function borderColour(px: Buffer, width: number, height: number): [number, numbe
   return ch.map((v) => v.sort((a, b) => a - b)[v.length >> 1]) as [number, number, number];
 }
 
-export interface MatteResult {
-  file: string;
+export interface MatteStats {
   width: number;
   height: number;
   background_white: string;
@@ -80,13 +81,17 @@ export interface MatteResult {
   warning?: string;
 }
 
+export interface MatteResult extends MatteStats {
+  file: string;
+}
+
 const hex = (c: number[]) => `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 
-export async function differenceMatte(onWhite: string, onBlack: string, out: string): Promise<MatteResult> {
-  const { width, height } = await size(onWhite);
-  if (width * height > MAX_PIXELS) throw new Error(`${width}x${height} is too large for a cutout.`);
-  const [w, b] = await Promise.all([pixels(onWhite, width, height), pixels(onBlack, width, height)]);
-
+export function computeDifferenceMatte(w: Uint8Array, b: Uint8Array, width: number, height: number): MatteStats & { rgba: Buffer } {
+  const expected = width * height * 3;
+  if (width <= 0 || height <= 0 || w.length !== expected || b.length !== expected) {
+    throw new Error(`Expected ${expected}-byte RGB buffers for ${width}x${height} matte.`);
+  }
   const bgW = borderColour(w, width, height);
   const bgB = borderColour(b, width, height);
   const span = bgW.map((v, c) => v - bgB[c]);
@@ -129,7 +134,6 @@ export async function differenceMatte(onWhite: string, onBlack: string, out: str
     }
     rgba[q + 3] = Math.round(a * 255);
   }
-  await writePng(rgba, width, height, out);
 
   const total = width * height;
   const mismatch_share = subject ? mismatch / subject : 0;
@@ -141,7 +145,7 @@ export async function differenceMatte(onWhite: string, onBlack: string, out: str
         ? `The model changed the subject between the white and black takes (${(mismatch_share * 100).toFixed(1)}% of it), so edges or patches may be see-through. Try again, or ask for a simpler subject.`
         : undefined;
   return {
-    file: out,
+    rgba,
     width,
     height,
     background_white: hex(bgW),
@@ -151,4 +155,13 @@ export async function differenceMatte(onWhite: string, onBlack: string, out: str
     mismatch_share: round(mismatch_share),
     ...(warning ? { warning } : {}),
   };
+}
+
+export async function differenceMatte(onWhite: string, onBlack: string, out: string): Promise<MatteResult> {
+  const { width, height } = await size(onWhite);
+  if (width * height > MAX_PIXELS) throw new Error(`${width}x${height} is too large for a cutout.`);
+  const [w, b] = await Promise.all([pixels(onWhite, width, height), pixels(onBlack, width, height)]);
+  const { rgba, ...stats } = computeDifferenceMatte(w, b, width, height);
+  await writePng(rgba, width, height, out);
+  return { file: out, ...stats };
 }
