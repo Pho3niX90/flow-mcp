@@ -196,6 +196,12 @@ Everything you make is saved in the **flow-mcp-out** folder in your home folder.
 **No assistant?** Open Flow Studio and work through its tabs from left to right: Cast, Frames, Shots,
 Voice, Restyle, Cut, Captions.
 
+**Want custom music too?** Run `npm run login -- --music` once to sign in to Google Flow Music in its own
+Chrome window, then ask your assistant to make a song (instrumental or with lyrics, 1 to 3 minutes, saved as
+M4A, MP3 or WAV — Flow Music shows no price beforehand, measured at 5 credits a song, with a safety cap).
+Songs run on their own lane so they don't wait behind videos. Chatting with Flow Music's Producer, audio
+uploads, remix, stems and music videos are not built yet.
+
 ---
 
 ## If something goes wrong

@@ -190,6 +190,14 @@ only falls back to one-at-a-time as a last resort.
 **Not covered:** Flow's own clip-stitching (the cut happens on your computer
 instead), its "improve prompt" button, and 4K, which your plan blocks.
 
+**Google Flow Music (separate site, same Chrome):** Flow MCP can also open Google Flow Music in its own
+Chrome window (`npm run login -- --music`) to compose original songs (1 to 3 minutes, instrumental or with
+lyrics, saved as M4A, MP3 or WAV) and download songs already in your Flow Music library, running on its own
+queue lane so music never waits behind a video. Because Flow Music shows no price before generating (observed
+at 5 credits a song), a spending guard checks your balance beforehand and stops the rest of the music queue
+if a song ever costs more than its limit. Chatting with the Producer, uploading reference audio, remixing,
+stems and music videos are not there yet.
+
 ---
 
 ## If a clip is made but no file appears

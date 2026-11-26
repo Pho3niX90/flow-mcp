@@ -255,6 +255,35 @@ apart inside Flow's composer, reading each scene's credit quote before sending) 
 them together. Each finished image is matched back to its scene by its prompt and attached references
 so scene numbers stay right regardless of finish order. Video scenes always stay serial.
 
+### Flow Music
+
+This tool also drives **Google Flow Music** (`https://www.flowmusic.app/`), Google's separate song-making
+site (Lyria 3.5 / Lyria 3 Pro), using its compose panel. Flow Music runs in its own Chrome window inside
+your account's Chrome profile and on its own queue lane, so songs generate alongside Flow videos and images
+without waiting behind them.
+
+Sign in to Flow Music once:
+
+```bash
+npm run login -- --music            # main account
+npm run login -- backup --music     # additional account
+```
+
+- **Tools:** `flow_music_status` (sign-in, plan, credits, music lane), `flow_music` (queue songs from a sound
+  description, optional lyrics, instrumental toggle, title, length 1:00–3:00 / `length_seconds` 60–180, BPM,
+  seed, model, and formats), `flow_music_songs` (list your library), and `flow_music_download` (download
+  existing songs by id or exact title). Songs land in `~/flow-mcp-out/<project>/song-NN.<ext>` in `m4a`
+  (default), `mp3`, or `wav`.
+- **Credit guard:** Flow Music shows **no price before generating** (observed price: 5 credits per song).
+  `max_credits` defaults to 10 and must be at least 5 or the song is refused before anything is typed; your
+  credit balance is also checked before generating (refused if under 5). Spend is measured from the balance
+  before minus after: if a song costs more than `max_credits`, it finishes with a warning note and every
+  remaining queued music job is failed so nothing else starts.
+- **Pacing:** songs have their own pause range, defaulting to Flow's (25–70 s) and overridable with
+  `FLOW_MCP_MUSIC_PAUSE_MIN_S` and `FLOW_MCP_MUSIC_PAUSE_MAX_S`.
+- **Not there yet:** chatting with the Producer, uploading reference audio, remixing, splitting stems, and
+  music videos.
+
 ---
 
 ## Tools
@@ -289,6 +318,10 @@ so scene numbers stay right regardless of finish order. Video scenes always stay
 | `flow_captions` | Burn spoken-word captions into any video, landscape or vertical, in one of five styles, at any height and size, in normal, capital or lowercase letters, in about 100 languages; returns the transcript so a misheard word can be fixed and the call repeated (local whisper.cpp, Chrome and FFmpeg, no credits) |
 | `flow_transcribe` | Hear the words in any video or audio on your computer, with each word's start and end time (local whisper.cpp, free) |
 | `flow_assemble` | Join clips into one MP4 (a project's clips, or any you list, in order) with optional music and voiceover, and separate volume for the clips' own sound. A voiceover can also be built line by line (`voice_lines`), each line cut from a take and placed at its own moment, for narration timed to on-screen titles (local FFmpeg, no credits) |
+| `flow_music_status` | Check Flow Music sign-in, plan tier, credit balance, window URL, and music queue lane |
+| `flow_music` | Queue songs via Flow Music's compose panel (Lyria 3.5 / Lyria 3 Pro) on the separate music lane; supports instrumental/lyrics, 1:00–3:00 (`length_seconds` 60–180), BPM, seed, model, `m4a`/`mp3`/`wav` downloads, and credit guard (observed 5 credits/song; default `max_credits` 10) |
+| `flow_music_songs` | List songs in your Flow Music library (newest first) with clip id, title, length, creation time, and sound description |
+| `flow_music_download` | Download existing songs from your Flow Music library by clip id or exact title in `m4a`, `mp3`, or `wav` (free; refuses ambiguous titles with matching ids listed) |
 
 **Continuity between shots:** `chain_previous` (this clip starts on the last frame of the previous
 one), `first_frame` + `last_frame` (animate between two stills you chose), `reference_images` (keep a
@@ -325,8 +358,8 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 - Settings file: `~/.flow-mcp/config.json` (`port`, `cdpPort`, `output`, `chrome`), created on first
   `flow-studio start`. Environment variables override it: `GEMINI_API_KEY`, `FLOW_MCP_PORT` (8787),
   `FLOW_MCP_OUTPUT`, `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PROJECT`,
-  `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`. Helper programs, if they are not on your PATH:
-  `FLOW_MCP_FFMPEG`, `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
+  `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`, `FLOW_MCP_MUSIC_PAUSE_MIN_S`, `FLOW_MCP_MUSIC_PAUSE_MAX_S`.
+  Helper programs, if they are not on your PATH: `FLOW_MCP_FFMPEG`, `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
 - Everything can live on another drive. `FLOW_MCP_HOME` moves the Chrome profile, downloads, settings and logs;
   working files for cutting and captions then go to a `tmp` folder inside it (or wherever `FLOW_MCP_TMP` points)
   instead of the system's temp folder. `FLOW_MCP_OUTPUT` moves the finished films.
@@ -423,6 +456,9 @@ which would have let a job spend past its limit).
 - `flow_trash` and `flow_rename` refuse whole Library collections.
 - Working files follow `FLOW_MCP_HOME` to another drive.
 - `npm install` works on Linux again (a dependency's GPU download had started failing the whole install).
+- **Google Flow Music (`flowmusic.app`):** make songs through the compose panel (`flow_music`), list your
+  library (`flow_music_songs`), download in M4A/MP3/WAV (`flow_music_download`), and check status/credits
+  (`flow_music_status`), running in its own Chrome window and queue lane alongside Flow.
 - Tests: `npm test` runs them, and they run on Windows, macOS and Linux for every change.
 
 **Upstream issues addressed.** Numbers link to [GTAI-1/flow-mcp](https://github.com/GTAI-1/flow-mcp/issues).
