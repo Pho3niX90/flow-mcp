@@ -93,7 +93,14 @@ function agentToggle(page: Page) {
 }
 async function agentIsOn(page: Page): Promise<boolean | null> {
   const t = agentToggle(page);
-  if (!(await t.isVisible().catch(() => false))) return null;
+  // The composer is drawn a moment after the grid, so "not visible right now" is not yet "there is none": read too
+  // early, agent mode that was ON looked like no toggle at all and the prompt went to the agent. The toggle gets a
+  // few seconds to show. With "Settings trigger" already on the page the composer has been drawn, so a short wait is
+  // enough to tell the variant that has no toggle (issue #43) without sitting out the long one.
+  if (!(await t.isVisible().catch(() => false))) {
+    const drawn = await settingsTrigger(page).isVisible().catch(() => false);
+    if (!(await t.waitFor({ state: "visible", timeout: drawn ? 1500 : 6000 }).then(() => true, () => false))) return null;
+  }
   const ariaPressed = await t.getAttribute("aria-pressed", { timeout: 3000 }).catch(() => null);
   const ariaChecked = ariaPressed === null ? await t.getAttribute("aria-checked", { timeout: 3000 }).catch(() => null) : null;
   const label =
@@ -218,6 +225,12 @@ async function walkNewTiles(page: Page, known: Iterable<string>): Promise<GridWa
       for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
         const id = idOf(tile);
         if (id && seen.has(id)) return { fresh, pending, errors, sawKnown: true };
+        // A tile with no media id (a failed one, one still rendering, a collection) is in the snapshot under its
+        // title. It has to be recognised here, before anything is counted: a failed tile left over from an earlier
+        // job sits at the top of the grid, and counted as a new failure it got Flow's Retry pressed on it, which
+        // re-runs the OLD prompt, or failed the new job outright.
+        const name = tile.getAttribute("aria-label");
+        if (!id && name && seen.has("title:" + name)) return { fresh, pending, errors, sawKnown: true };
         if (tile.querySelector("flow-error-tile")) {
           errors++;
           continue;
@@ -236,10 +249,7 @@ async function walkNewTiles(page: Page, known: Iterable<string>): Promise<GridWa
             kind: isVideo ? "video" : tile.querySelector("flow-image-tile") ? "image" : "other",
             label: tile.getAttribute("aria-label") || "",
           });
-          continue;
         }
-        const name = tile.getAttribute("aria-label");
-        if (name && seen.has("title:" + name)) return { fresh, pending, errors, sawKnown: true };
       }
       return { fresh, pending, errors, sawKnown: false };
     },
