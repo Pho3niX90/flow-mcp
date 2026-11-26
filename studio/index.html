@@ -149,9 +149,17 @@ details.adv[open] summary::before{content:"▾ "}
 #viewer video,#viewer img{display:block;width:100%;height:100%;object-fit:contain}
 #viewerPath{margin-top:8px;font-size:14px;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .lib{display:grid;gap:6px;max-height:420px;overflow:auto;margin-top:10px}
-.lib button{display:flex;gap:10px;align-items:center;justify-content:space-between;text-align:left;min-height:44px;padding:8px 12px;font:500 17px var(--body);color:var(--bone);background:var(--ink);border:2px solid var(--line);border-radius:10px;cursor:pointer}
-.lib button:hover{border-color:var(--tally)} .lib button.on{border-color:var(--go)}
-.lib em{font:700 14px var(--mono);font-style:normal;color:var(--dim);text-transform:uppercase}
+.lib button:not(.btn){display:flex;gap:10px;align-items:center;justify-content:space-between;text-align:left;min-height:44px;padding:8px 12px;font:500 17px var(--body);color:var(--bone);background:var(--ink);border:2px solid var(--line);border-radius:10px;cursor:pointer}
+.lib button:not(.btn):hover{border-color:var(--tally)} .lib button:not(.btn).on{border-color:var(--go)}
+.lib em{font:700 14px var(--mono);font-style:normal;color:var(--dim);text-transform:uppercase;flex:none}
+.librow{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.librow .libitem{flex:1 1 180px;min-width:0}
+.librow .libitem span{min-width:0;overflow-wrap:anywhere}
+.librow .libpath{display:block;font:600 13px var(--mono);color:var(--dim);margin-top:2px;overflow-wrap:anywhere}
+.librow .libacts{display:flex;gap:6px;flex-wrap:wrap;flex:none}
+.librow.col{padding:8px 12px;border:2px solid var(--line);border-radius:10px;background:var(--ink3);justify-content:space-between}
+.librow.col .meta{flex:1 1 160px;min-width:0}
+.librow.col b{display:block;font:700 16px var(--body);color:var(--bone);overflow-wrap:anywhere}
 dialog{margin:auto;width:min(640px,calc(100vw - 24px));max-height:86vh;border:2px solid var(--line);border-radius:14px;background:var(--ink2);color:var(--bone);padding:16px}
 dialog::backdrop{background:rgba(0,0,0,.7)}
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:60;max-width:calc(100vw - 32px);padding:12px 18px;border-radius:10px;background:var(--bone);color:var(--ink);font-weight:700;font-size:17px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
@@ -531,6 +539,7 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
         <p class="lede">Everything already in the open Flow project. Download anything without regenerating it — the 1080p and 2K upscales are free.</p>
         <div class="card">
           <label class="f">Save into project folder</label><input type="text" id="l_project" placeholder="MyFilm">
+          <label class="check" style="margin-top:10px"><input type="checkbox" id="l_recursive">Include collections</label>
           <div class="rowbtns"><button class="btn small" id="l_load">Load library</button><button class="btn small" id="l_dl" disabled>Download selected</button><button class="btn small ghost" id="l_dlhd" disabled>…in 1080p / 2K</button><button class="btn small ghost" id="l_trash" disabled style="border-color:var(--bad);color:var(--bad)">Move to Flow's Trash</button></div>
           <p class="empty" style="margin-top:6px">This removes things from your Flow project, not from <span data-place="computer">this Mac</span> — your downloaded files stay put. Flow keeps them in its Trash, where you can restore them.</p>
           <div class="lib" id="l_list"></div>
@@ -671,6 +680,7 @@ const DEFAULTS = {
   music: { project: "MyFilm", sound: "", instrumental: true, lyrics: "", title: "", lengthAuto: true, length: 90, bpmAuto: true, bpm: 96, seed: "", model: "", formats: ["m4a"] },
   cut: { project: "MyFilm", music: null, voiceover: null, hold: true, clips: [] },
   captions: { video: null, style: "bold", position: "bottom", size: 100, colors: {}, text: "" },
+  library: { recursive: false },
 };
 const S = (() => {
   let stored = {};
@@ -683,6 +693,8 @@ const S = (() => {
   merged.cutout = Object.assign(structuredClone(DEFAULTS.cutout), merged.cutout || {});
   merged.music = Object.assign(structuredClone(DEFAULTS.music), merged.music || {});
   if (!Array.isArray(merged.music.formats) || !merged.music.formats.length) merged.music.formats = ["m4a"];
+  merged.library = Object.assign(structuredClone(DEFAULTS.library), merged.library || {});
+  merged.library.recursive = Boolean(merged.library.recursive);
   return merged;
 })();
 const save = () => { try { localStorage.setItem("flow-studio-v2", JSON.stringify(S)); } catch {} };
@@ -801,7 +813,7 @@ async function openPicker(mode) {
   }
   try {
     if (!LIB.length) LIB = await api("assets");
-    $("#pickList").innerHTML = LIB.map((a, n) => `<button data-n="${n}"><span>${esc(a.name)}</span><em>${a.kind}</em></button>`).join("") || `<p class="empty">Nothing in the project yet.</p>`;
+    $("#pickList").innerHTML = LIB.map((a, n) => (a.kind === "collection" ? "" : `<button data-n="${n}"><span>${esc(a.name)}</span><em>${esc(a.kind)}</em></button>`)).join("") || `<p class="empty">Nothing in the project yet.</p>`;
   } catch (err) { $("#pickList").innerHTML = `<p class="empty" style="color:var(--bad)">${esc(err.message)}</p>`; }
 }
 $("#pickList").addEventListener("click", (e) => { const b = e.target.closest("button[data-n]"); if (!b) return; setSlot(pickTarget.kind, pickTarget.i, { asset: LIB[+b.dataset.n].name }); picker.close(); });
@@ -1565,12 +1577,13 @@ $("#cap_go").onclick = async () => {
 /* ---------- library ---------- */
 const chosen = new Set();
 let libLoaded = false;
+const isMediaAsset = (a) => Boolean(a && a.kind !== "collection" && a.kind !== "character");
 async function loadLib() {
   if (!guard()) return;
   const b = $("#l_load"); b.disabled = true; b.textContent = "Reading Flow…";
-  $("#l_list").innerHTML = `<p class="empty">Scrolling the project…</p>`;
+  $("#l_list").innerHTML = `<p class="empty">${S.library.recursive ? "Reading project and collections…" : "Scrolling the project…"}</p>`;
   try {
-    LIB = await api("assets");
+    LIB = S.library.recursive ? await api("assets", { recursive: true }) : await api("assets");
     libLoaded = true;
     chosen.clear();
     renderLib();
@@ -1579,16 +1592,88 @@ async function loadLib() {
   b.disabled = false; b.textContent = "Reload library";
 }
 $("#l_load").onclick = loadLib;
+$("#l_recursive").addEventListener("change", () => {
+  S.library.recursive = $("#l_recursive").checked;
+  save();
+  if (libLoaded && LIVE) loadLib();
+});
 function renderLib() {
-  $("#l_list").innerHTML = LIB.map((a, n) => `<button data-n="${n}" class="${chosen.has(n) ? "on" : ""}"><span>${chosen.has(n) ? "✓ " : ""}${esc(a.name)}</span><em>${a.kind}</em></button>`).join("");
-  $("#l_dl").disabled = $("#l_dlhd").disabled = $("#l_trash").disabled = !chosen.size;
+  $("#l_list").innerHTML = LIB.map((a, n) => {
+    if (a.kind === "collection") {
+      return `<div class="librow col"><div class="meta"><b>${esc(a.name)}</b>${a.path ? `<small class="libpath">${esc(a.path)}</small>` : ""}</div><em>collection</em><button type="button" class="btn small ghost" data-libzip="${n}">Download all as ZIP</button></div>`;
+    }
+    const mediaRow = isMediaAsset(a);
+    return `<div class="librow"><button type="button" class="libitem${chosen.has(n) ? " on" : ""}" data-n="${n}"><span>${chosen.has(n) ? "✓ " : ""}${esc(a.name)}${a.path ? `<small class="libpath">${esc(a.path)}</small>` : ""}</span><em>${esc(a.kind)}</em></button>${mediaRow ? `<div class="libacts"><button type="button" class="btn small ghost" data-librename="${n}">Rename</button><button type="button" class="btn small ghost" data-libtrash="${n}" style="border-color:var(--bad);color:var(--bad)">Trash</button></div>` : ""}</div>`;
+  }).join("");
+  const trashable = [...chosen].filter((n) => isMediaAsset(LIB[n]));
+  $("#l_dl").disabled = $("#l_dlhd").disabled = !chosen.size;
+  $("#l_trash").disabled = !trashable.length;
 }
-$("#l_list").addEventListener("click", (e) => { const b = e.target.closest("button[data-n]"); if (!b) return; const n = +b.dataset.n; chosen.has(n) ? chosen.delete(n) : chosen.add(n); renderLib(); });
-const dl = (quality) => async () => { if (!guard()) return; toast("Downloading…"); try { const out = await api("download", { project: $("#l_project").value.trim() || "MyFilm", assets: [...chosen].map((n) => LIB[n].name), quality }); toast(`Saved ${out.files.length} file(s)`); loadGallery(); } catch (err) { toast(err.message, true); } };
+$("#l_list").addEventListener("click", async (e) => {
+  const zip = e.target.closest("[data-libzip]");
+  if (zip) {
+    if (!guard()) return;
+    const a = LIB[+zip.dataset.libzip]; if (!a) return;
+    const col = a.ref ?? a.name;
+    zip.disabled = true; zip.textContent = "Downloading…";
+    try {
+      const out = await api("download", { project: $("#l_project").value.trim() || "MyFilm", collection: col });
+      toast(`Saved ${out.files?.length ?? 0} file(s) from ${a.name}`);
+      loadGallery();
+    } catch (err) { toast(err.message, true); }
+    zip.disabled = false; zip.textContent = "Download all as ZIP";
+    return;
+  }
+  const ren = e.target.closest("[data-librename]");
+  if (ren) {
+    if (!guard()) return;
+    const a = LIB[+ren.dataset.librename]; if (!a || !isMediaAsset(a)) return;
+    const next = prompt(`New name for "${a.name}":`, a.name);
+    if (next === null) return;
+    const new_name = next.trim();
+    if (!new_name || new_name === a.name) return;
+    ren.disabled = true; ren.textContent = "Renaming…";
+    try {
+      const out = await api("rename", { name: a.name, new_name });
+      toast(`Renamed to ${out.to || new_name}`);
+      await loadLib();
+    } catch (err) { toast(err.message, true); ren.disabled = false; ren.textContent = "Rename"; }
+    return;
+  }
+  const tr = e.target.closest("[data-libtrash]");
+  if (tr) {
+    if (!guard()) return;
+    const a = LIB[+tr.dataset.libtrash]; if (!a || !isMediaAsset(a)) return;
+    if (!confirm(`Move "${a.name}" to Flow's Trash?\n\nYou can restore it from Trash in Flow.`)) return;
+    tr.disabled = true; tr.textContent = "Moving…";
+    try {
+      await api("trash", { name: a.name });
+      toast(`Moved "${a.name}" to Flow's Trash`);
+      await loadLib();
+    } catch (err) { toast(err.message, true); tr.disabled = false; tr.textContent = "Trash"; }
+    return;
+  }
+  const b = e.target.closest("button[data-n]"); if (!b) return;
+  const n = +b.dataset.n;
+  chosen.has(n) ? chosen.delete(n) : chosen.add(n);
+  renderLib();
+});
+const dl = (quality) => async () => {
+  if (!guard()) return;
+  const refs = [...chosen].map((n) => LIB[n]).filter((a) => a && a.kind !== "collection").map((a) => a.ref ?? a.name);
+  if (!refs.length) return;
+  toast("Downloading…");
+  try {
+    const out = await api("download", { project: $("#l_project").value.trim() || "MyFilm", assets: refs, quality });
+    toast(`Saved ${out.files.length} file(s)`);
+    loadGallery();
+  } catch (err) { toast(err.message, true); }
+};
 $("#l_dl").onclick = dl("original"); $("#l_dlhd").onclick = dl("upscaled");
 $("#l_trash").onclick = async () => {
   if (!guard()) return;
-  const names = [...chosen].map((n) => LIB[n].name);
+  const names = [...chosen].map((n) => LIB[n]).filter(isMediaAsset).map((a) => a.name);
+  if (!names.length) return;
   // Flow trashes instantly with no question of its own, so the panel asks.
   if (!confirm(`Move ${names.length === 1 ? "this" : `these ${names.length}`} to Flow's Trash?\n\n${names.join("\n")}\n\nYou can restore ${names.length === 1 ? "it" : "them"} from Trash in Flow.`)) return;
   const b = $("#l_trash"); b.disabled = true; b.textContent = "Moving…";
@@ -1596,7 +1681,7 @@ $("#l_trash").onclick = async () => {
   for (const name of names) { try { await api("trash", { name }); } catch (err) { failed.push(`${name}: ${err.message}`); } }
   b.textContent = "Move to Flow's Trash";
   toast(failed.length ? `${names.length - failed.length} moved to Trash. Not moved: ${failed.join("; ")}` : `${names.length} moved to Flow's Trash`, Boolean(failed.length));
-  LIB = []; chosen.clear(); $("#l_load").click();
+  LIB = []; chosen.clear(); loadLib();
 };
 
 /* ---------- roll ---------- */
@@ -2111,6 +2196,7 @@ function renderAll() {
   if (mus) mus.outerHTML = slotHtml("music", 0, S.cut.music, "Music track");
   if (vo) vo.outerHTML = slotHtml("voiceover", 0, S.cut.voiceover, "Narration");
   $("#c_hold").checked = S.cut.hold;
+  if ($("#l_recursive")) $("#l_recursive").checked = Boolean(S.library.recursive);
   renderClips(); renderCaptions();
   if ($("#n_style")) $("#n_style").value = S.narrate.style ?? "";
   estimate(); save();
