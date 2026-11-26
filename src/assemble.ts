@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { renderEndCard } from "./captions.js";
-import { FFMPEG_HINT } from "./platform.js";
+import { FFMPEG_HINT, workDir } from "./platform.js";
 
 const run = promisify(execFile);
 const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
@@ -268,7 +267,7 @@ export interface VoiceLine {
 // a narration in the user's own Flow voice had to land each line on the kinetic text it describes.
 export async function voiceTrack(lines: VoiceLine[], out: string): Promise<{ file: string; lines: { at: number; seconds: number; speed: number }[]; warnings: string[] }> {
   if (!lines.length) throw new Error("No voice lines given.");
-  const work = mkdtempSync(join(tmpdir(), "flow-voice-"));
+  const work = workDir("flow-voice-");
   try {
     // Pass 1: cut each line and trim the silence at both ends, so a line is only sped up when the SPEECH is too long.
     // On the first real run a cut kept 0.4 s of room tone after "Blender", was pushed to the 1.25x limit and still ran
@@ -397,7 +396,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
   );
   if (o.end_card?.text.trim()) {
     // The card is made at the film's size from the last kept frame of the last clip, then joined like any other clip.
-    const work = mkdtempSync(join(tmpdir(), "flow-card-"));
+    const work = workDir("flow-card-");
     const last = clips.length - 1;
     const { width: w, height: h } = infos.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a));
     const still = join(work, "last.jpg");
@@ -493,7 +492,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
   let markDir = "";
   let markBox: { cx: number; cy: number; r: number } | null = null;
   if (o.remove_watermark) {
-    markDir = mkdtempSync(join(tmpdir(), "flow-mark-"));
+    markDir = workDir("flow-mark-");
     const mask = join(markDir, "mark.pgm");
     const samples = clips.slice(0, userClips).flatMap((file, i) => {
       const vf = `${windows[i].crop}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
@@ -565,7 +564,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
     if (ghosts.length) {
       // The same filled-sparkle fill as the main mark, moved onto each copy and switched on only while it shows: a box
       // fill (delogo) left a visible smudged rectangle on the wet floor.
-      const dir = mkdtempSync(join(tmpdir(), "flow-ghost-"));
+      const dir = workDir("flow-ghost-");
       const R = markBox.r + 6 * (Math.min(width, height) / 1080);
       const steps = ghosts.map((g, n) => {
         const mask = Buffer.alloc(width * height);

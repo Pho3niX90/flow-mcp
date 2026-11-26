@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 
 // Everything that differs between macOS, Windows and Linux lives here, so the rest of the code stays the same on all
@@ -14,6 +14,18 @@ export const COMPUTER = IS_MAC ? "this Mac" : IS_WIN ? "this PC" : "this compute
 export const BIN = IS_MAC ? "the Mac's Trash" : IS_WIN ? "the Recycle Bin" : "the Trash";
 
 export const FFMPEG_HINT = IS_MAC ? "brew install ffmpeg" : IS_WIN ? "winget install Gyan.FFmpeg" : "sudo apt install ffmpeg";
+
+// Where working files go while something is being made: FLOW_MCP_TMP when set; otherwise a "tmp" folder inside
+// FLOW_MCP_HOME when that is set, so someone who moved the tool to another drive gets its working files there too
+// (a film being cut can be gigabytes, and the system's temp folder is on the system drive); otherwise the system's
+// temp folder, as before.
+export const TMP_ROOT = process.env.FLOW_MCP_TMP ?? (process.env.FLOW_MCP_HOME ? join(process.env.FLOW_MCP_HOME, "tmp") : tmpdir());
+
+// A new, empty working folder whose name starts with `prefix`. The caller removes it when done.
+export function workDir(prefix: string): string {
+  mkdirSync(TMP_ROOT, { recursive: true });
+  return mkdtempSync(join(TMP_ROOT, prefix));
+}
 
 // PowerShell single-quoted string: the only character that needs escaping is the quote itself.
 export const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;

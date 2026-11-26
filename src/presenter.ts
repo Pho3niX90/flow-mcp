@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { FFMPEG_HINT } from "./platform.js";
+import { FFMPEG_HINT, workDir } from "./platform.js";
 
 const run = promisify(execFile);
 const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
@@ -136,7 +135,7 @@ export async function presenter(o: PresenterOptions): Promise<{ output: string; 
   const cx = Math.max(0, Math.min(info.width - cw, Math.round(info.width * face.x - cw / 2)));
   const cy = Math.max(0, Math.min(info.height - cw, Math.round(info.height * face.y - cw / 2)));
 
-  const work = mkdtempSync(join(tmpdir(), "flow-presenter-"));
+  const work = workDir("flow-presenter-");
   try {
     const circle = (size: number) => `255*clip(${size / 2}-hypot(X-${size / 2}+0.5\\,Y-${size / 2}+0.5)+0.5\\,0\\,1)`;
     const mask = join(work, "mask.png");

@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus, homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpus, homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 import { chromeExecutable, HOME_DIR } from "./chrome.js";
-import { FFMPEG_HINT, IS_MAC, IS_WIN } from "./platform.js";
+import { FFMPEG_HINT, IS_MAC, IS_WIN, workDir } from "./platform.js";
 
 // Captions in the style short-form apps use, burned into the picture. The words and their timings come from
 // whisper.cpp on this computer; the lettering is drawn by headless Chrome and laid over the video by ffmpeg. Chrome
@@ -431,7 +431,7 @@ export async function transcribe(video: string, language = "auto"): Promise<Tran
   const autoFile = asked === "auto" ? cacheFile("auto") : undefined;
   if (autoFile && existsSync(autoFile)) return JSON.parse(readFileSync(autoFile, "utf8")) as Transcript;
 
-  const work = mkdtempSync(join(tmpdir(), "flow-captions-"));
+  const work = workDir("flow-captions-");
   const wav = join(work, "audio.wav");
   const extract = () => run(FFMPEG, ["-v", "error", "-y", "-i", clean ?? video, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], BIG);
   try {
@@ -829,7 +829,7 @@ export async function burnCaptions(video: string, opts: CaptionOptions, output: 
   const { pages, states } = layout(words, o.style, info.width, info.height, o.size, lettersOf(o), o.lead ?? LEAD, lang);
   if (!states.length) throw new Error("There are no words to put on screen.");
 
-  const work = mkdtempSync(join(tmpdir(), "flow-captions-"));
+  const work = workDir("flow-captions-");
   try {
     // Draw every distinct caption once, as a transparent picture the size of the video.
     const files = new Map<string, string>();
