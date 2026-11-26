@@ -135,6 +135,7 @@ details.adv[open] summary::before{content:"▾ "}
 .songrow p{color:var(--dim);font-size:14px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gal figure{margin:0;border-radius:10px;overflow:hidden;background:#000;border:2px solid var(--line);cursor:pointer}
 .gal figure:hover{border-color:var(--tally)}
+.checker,.gal figure.checker,#viewerBody.checker,.job img.out.checker{background-color:#2a241e;background-image:linear-gradient(45deg,#433b33 25%,transparent 25%),linear-gradient(-45deg,#433b33 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#433b33 75%),linear-gradient(-45deg,transparent 75%,#433b33 75%);background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0}
 .gal video,.gal img{display:block;width:100%;aspect-ratio:1;object-fit:cover}
 .gal figcaption{padding:6px 8px;font:700 13px var(--mono);color:var(--bone);background:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* The buttons sit on top, and every clip and still fits the same fixed frame below them, so the viewer is the same
@@ -269,6 +270,18 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           <label class="f">Paste a script to make frames from</label>
           <textarea id="f_script" style="min-height:100px" placeholder="One frame per paragraph, or numbered: 1. ... 2. ..."></textarea>
           <div class="rowbtns"><button class="btn small" data-split="frames-replace">Replace frames</button><button class="btn small ghost" data-split="frames-append">Append</button></div>
+        </div>
+        <h2 style="margin-top:18px">Cut-out <small>transparent background</small></h2>
+        <div class="card" id="cutoutCard">
+          <p class="empty">Free, and needs FFmpeg. Queues two takes (white background, then black) and saves cutout-NN.png with real transparency in the project folder above.</p>
+          <label class="f" for="co_prompt">Describe the subject (or optional note for a picture)</label>
+          <textarea id="co_prompt" style="min-height:80px" placeholder="A red sneaker, three-quarter view, studio product photo"></textarea>
+          <label class="f">Or pick a picture from <span data-place="computer">this Mac</span> or Flow</label>
+          <div class="slots"><div class="slot" data-slot="cutout" data-i="0"></div></div>
+          <label class="f">Frame</label>
+          <div class="seg" data-seg="co_aspect"></div>
+          <div class="rowbtns"><button type="button" class="btn" id="co_go">Make cut-out</button></div>
+          <p class="empty" id="co_info" style="margin-top:10px"></p>
         </div>
       </section>
 
@@ -589,6 +602,7 @@ const blank = () => ({ prompt: "", technique: "", chain: false, match: false, fi
 const DEFAULTS = {
   tab: "cast",
   frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", parallel: false, scenes: [blank()] },
+  cutout: { prompt: "", aspect: "1:1" },
   shots: { project: "MyFilm", model: "Omni 1.2 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 25, scenes: [blank()] },
   narrate: { project: "MyFilm", engine: "kokoro", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
   music: { project: "MyFilm", sound: "", instrumental: true, lyrics: "", title: "", lengthAuto: true, length: 90, bpmAuto: true, bpm: 96, seed: "", model: "", formats: ["m4a"] },
@@ -601,15 +615,17 @@ const S = (() => {
   const merged = Object.assign(structuredClone(DEFAULTS), stored);
   merged.frames = Object.assign(structuredClone(DEFAULTS.frames), merged.frames || {});
   merged.frames.parallel = Boolean(merged.frames.parallel);
+  merged.cutout = Object.assign(structuredClone(DEFAULTS.cutout), merged.cutout || {});
   merged.music = Object.assign(structuredClone(DEFAULTS.music), merged.music || {});
   if (!Array.isArray(merged.music.formats) || !merged.music.formats.length) merged.music.formats = ["m4a"];
   return merged;
 })();
 const save = () => { try { localStorage.setItem("flow-studio-v2", JSON.stringify(S)); } catch {} };
 if (!["kokoro", "gemini"].includes(S.narrate.engine)) S.narrate.engine = "kokoro"; // the computer-voice engine is gone
-let TECH = [], VOICES = { kokoro: [], gemini: [] }, CAST = [], LIB = [], GAL = [], MUSIC_LIB = [], castImage = null, pickTarget = null, busy = false;
+let TECH = [], VOICES = { kokoro: [], gemini: [] }, CAST = [], LIB = [], GAL = [], MUSIC_LIB = [], castImage = null, cutoutImage = null, pickTarget = null, busy = false;
 const isSongFile = (f) => f.kind === "audio" && /^song-/i.test(f.name);
 const isNarrationFile = (f) => f.kind === "audio" && !/^song-/i.test(f.name);
+const isCutoutPng = (name) => /^cutout-.*\.png$/i.test(name) && !/-(white|black)\.png$/i.test(name);
 const fmtSecs = (s) => { if (typeof s !== "number" || !Number.isFinite(s)) return ""; const t = Math.max(0, Math.round(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 
 /* ---------- tabs ---------- */
@@ -637,6 +653,7 @@ addEventListener("hashchange", () => { const t = hashTab(); if (t) showTab(t); }
 const durations = () => (S.shots.model.startsWith("Omni 1.2") ? [4, 6, 8, 10, 12, 15] : [4, 6, 8, 10]);
 const SEGS = {
   f_aspect: { get: () => S.frames.aspect, set: (v) => (S.frames.aspect = v), opts: ["16:9", "9:16", "1:1", "4:3", "3:4"] },
+  co_aspect: { get: () => S.cutout.aspect, set: (v) => (S.cutout.aspect = v), opts: ["1:1", "16:9", "9:16", "4:3", "3:4"] },
   f_variants: { get: () => S.frames.variants, set: (v) => (S.frames.variants = +v), opts: [1, 2, 3, 4] },
   f_engine: { get: () => S.frames.engine, set: (v) => (S.frames.engine = v), opts: ["exact", "agent"], labels: { exact: "One by one", agent: "Flow agent · all at once" } },
   s_aspect: { get: () => S.shots.aspect, set: (v) => (S.shots.aspect = v), opts: ["16:9", "9:16"] },
@@ -676,6 +693,7 @@ function slotHtml(kind, i, val, label) {
 function setSlot(kind, idx, val) {
   if (kind === "capvideo") return void setCapVideo(val);
   if (kind === "cast") castImage = val;
+  else if (kind === "cutout") cutoutImage = val;
   else if (kind === "music" || kind === "voiceover") S.cut[kind] = val;
   else if (kind === "clip") { (S.cut.clips ??= []); if (val) S.cut.clips.push(val); }
   else if (kind.startsWith("ref")) { const [, group, i, j] = kind.split(":"); const sc = S[group].scenes[+i]; val ? (sc.refs[+j] = val) : sc.refs.splice(+j, 1); }
@@ -862,6 +880,36 @@ document.addEventListener("click", (e) => {
   S[group].scenes = [...keep, ...made].slice(0, 100); save(); renderAll();
   toast(`${parts.length} frame(s) created`);
 });
+
+/* ---------- cutout ---------- */
+function renderCutout() {
+  if ($("#co_prompt").value !== (S.cutout.prompt ?? "")) $("#co_prompt").value = S.cutout.prompt ?? "";
+  const slot = $('[data-slot="cutout"]');
+  if (slot) slot.outerHTML = slotHtml("cutout", 0, cutoutImage, "Picture to cut out");
+}
+$("#co_prompt").addEventListener("input", () => { S.cutout.prompt = $("#co_prompt").value; save(); });
+$("#co_go").onclick = async () => {
+  if (!guard()) return;
+  const prompt = $("#co_prompt").value.trim();
+  if (!prompt && !cutoutImage) return toast("Describe the subject or pick a picture first.", true);
+  const project = $("#f_project").value.trim() || S.frames.project || "MyFilm";
+  const b = $("#co_go"); b.disabled = true; b.textContent = "Queueing…";
+  try {
+    await api("cutout", {
+      project,
+      aspect_ratio: S.cutout.aspect,
+      ...(prompt ? { prompt } : {}),
+      ...(cutoutImage ? { image: cutoutImage.asset ? `asset:${cutoutImage.asset}` : cutoutImage.path } : {}),
+    });
+    $("#co_info").textContent = "Queued two takes (white and black) — watch the Monitor.";
+    toast("Cut-out queued.");
+    poll();
+  } catch (err) {
+    $("#co_info").textContent = err.message;
+    toast(err.message, true);
+  }
+  b.disabled = false; b.textContent = "Make cut-out";
+};
 
 /* ---------- narrate ---------- */
 // Each engine keeps its own voice choice, so switching engines and back never loses the pick.
@@ -1518,7 +1566,7 @@ function renderGallery() {
     return;
   }
   const want = GALLERY_KINDS[S.tab] ?? ["image", "video"];
-  gal.innerHTML = (p?.files ?? []).map((f, n) => !want.includes(f.kind) ? "" : `<figure data-n="${n}">${f.kind === "video" ? `<video muted playsinline preload="metadata" src="${media(f.path)}#t=0.1"></video>` : `<img loading="lazy" src="${media(f.path)}">`}<figcaption>${esc(f.name)}</figcaption></figure>`).join("");
+  gal.innerHTML = (p?.files ?? []).map((f, n) => !want.includes(f.kind) ? "" : `<figure data-n="${n}"${f.kind === "image" && isCutoutPng(f.name) ? ' class="checker"' : ""}>${f.kind === "video" ? `<video muted playsinline preload="metadata" src="${media(f.path)}#t=0.1"></video>` : `<img loading="lazy" src="${media(f.path)}">`}<figcaption>${esc(f.name)}</figcaption></figure>`).join("");
 }
 $("#galProject").onchange = renderGallery;
 $("#gal").addEventListener("click", async (e) => {
@@ -1529,10 +1577,11 @@ $("#gal").addEventListener("click", async (e) => {
   }
   const fig = e.target.closest("figure"); if (!fig) return;
   const f = GAL.find((x) => x.name === $("#galProject").value).files[+fig.dataset.n];
+  $("#viewerBody").classList.toggle("checker", f.kind === "image" && isCutoutPng(f.name));
   $("#viewerBody").innerHTML = f.kind === "video" ? `<video controls autoplay playsinline src="${media(f.path)}"></video>` : `<img src="${media(f.path)}">`;
   $("#viewerPath").textContent = f.path; $("#viewerPath").title = f.path; viewer.showModal();
 });
-$("#viewer").addEventListener("close", () => ($("#viewerBody").innerHTML = ""));
+$("#viewer").addEventListener("close", () => { $("#viewerBody").innerHTML = ""; $("#viewerBody").classList.remove("checker"); });
 // Files on this computer: moved to its own bin (Mac Trash, Windows Recycle Bin), so anything removed by mistake can be put back.
 async function discardLocal(path, label) {
   if (!confirm(`Move ${label} to ${PLACE.bin}?\n\n${path}\n\nYou can put it back from there.`)) return false;
@@ -1757,7 +1806,7 @@ function renderStatus(st) {
       ${j.status === "queued" ? `<button class="btn small ghost" data-cancel="${j.id}">Cancel</button>` : ""}${/failed|cancelled/.test(j.status) && !j.outcome_unknown ? `<button class="btn small" data-retry="${j.id}">Retry</button>` : ""}${j.status === "done" && j.failed_scenes?.length ? `<button class="btn small" data-retry="${j.id}">Retry ${j.failed_scenes.length} failed image${j.failed_scenes.length > 1 ? "s" : ""}</button>` : ""}</div>
       ${j.status === "running" ? `<div class="meter"><i style="width:${parseInt(j.progress) || 4}%"></i></div>` : ""}
       <p>${esc(j.prompt)}</p>${j.note ? `<p style="color:var(--warn)">${esc(j.note)}</p>` : ""}${j.error ? `<p class="err">${esc(j.error)}</p>` : ""}
-      ${j.files.map((p) => (/\.(mp4|webm|mov)$/i.test(p) ? `<video controls playsinline preload="metadata" src="${media(p)}"></video>` : /\.(m4a|mp3|wav)$/i.test(p) ? `<audio controls src="${media(p)}"></audio>` : `<img class="out" src="${media(p)}">`)).join("")}</div>`).join("") || `<p class="empty">Nothing queued yet.</p>`;
+      ${j.files.map((p) => (/\.(mp4|webm|mov)$/i.test(p) ? `<video controls playsinline preload="metadata" src="${media(p)}"></video>` : /\.(m4a|mp3|wav)$/i.test(p) ? `<audio controls src="${media(p)}"></audio>` : `<img class="out${isCutoutPng(p.split(/[\\/]/).pop() || "") ? " checker" : ""}" src="${media(p)}">`)).join("")}</div>`).join("") || `<p class="empty">Nothing queued yet.</p>`;
   }
   estimate();
   return { active, musicActive: st.jobs.some((j) => j.lane === "music" && (j.status === "running" || j.status === "queued")) };
@@ -1780,7 +1829,7 @@ async function poll(detailed = false) {
 function renderAll() {
   for (const [id, val] of [["f_project", S.frames.project], ["s_project", S.shots.project], ["n_project", S.narrate.project], ["m_project", S.music.project], ["c_project", S.cut.project], ["e_project", S.cut.project], ["l_project", S.cut.project]]) if ($("#" + id) && !$("#" + id).value) $("#" + id).value = val;
   $("#s_model").innerHTML = Object.keys(VIDEO_COST).map((m) => `<option ${m === S.shots.model ? "selected" : ""}>${m}</option>`).join("");
-  renderSegs(); renderScenes(); renderCast(); renderNarrate(); renderMusic();
+  renderSegs(); renderScenes(); renderCutout(); renderCast(); renderNarrate(); renderMusic();
   const mus = $('[data-slot="music"]'), vo = $('[data-slot="voiceover"]');
   if (mus) mus.outerHTML = slotHtml("music", 0, S.cut.music, "Music track");
   if (vo) vo.outerHTML = slotHtml("voiceover", 0, S.cut.voiceover, "Narration");
