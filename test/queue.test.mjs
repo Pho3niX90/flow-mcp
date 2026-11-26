@@ -293,3 +293,44 @@ test("JobQueue keeps single-account flow-only pausedReason wording unchanged", a
   await waitUntil(() => j1.status === "done" && j2.status === "done");
   assert.match(seenPacing ?? "", /^pacing: next generation in \d+s$/);
 });
+
+test("JobQueue failQueuedLane stops remaining queued music jobs without disturbing flow jobs", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((r) => (releaseFirst = r));
+  let firstStarted = false;
+
+  const queue = new JobQueue(
+    async (job, _account, lane) => {
+      if (job.params.file_stem === "song-01") {
+        firstStarted = true;
+        await firstGate;
+        // Simulate a song that cost more than max_credits: fail remaining queued music jobs and finish this one.
+        queue.failQueuedLane("music", "a song cost more than its limit; nothing more was started");
+        return ["song-01.m4a"];
+      }
+      return [`${job.params.file_stem}.${lane === "music" ? "m4a" : "png"}`];
+    },
+    {
+      accounts: () => ["main"],
+      ready: async () => undefined,
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
+    },
+  );
+
+  const s1 = queue.add(baseParams("song-01", { type: "audio", lane: "music", max_credits: 5 }));
+  const s2 = queue.add(baseParams("song-02", { type: "audio", lane: "music", max_credits: 5 }));
+  const s3 = queue.add(baseParams("song-03", { type: "audio", lane: "music", max_credits: 5 }));
+  const f1 = queue.add(baseParams("scene-01"));
+
+  await waitUntil(() => firstStarted);
+  releaseFirst();
+  await waitUntil(() => [s1, s2, s3, f1].every((j) => j.status === "done" || j.status === "failed"));
+
+  assert.equal(s1.status, "done");
+  assert.equal(s2.status, "failed");
+  assert.equal(s2.error, "a song cost more than its limit; nothing more was started");
+  assert.equal(s3.status, "failed");
+  assert.equal(s3.error, "a song cost more than its limit; nothing more was started");
+  assert.equal(f1.status, "done");
+});

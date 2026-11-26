@@ -12,7 +12,8 @@ import { characterLook, characterVoice, characterVoices, createCharacter, create
 import { accountByName, addAccount, defaultAccount, defaultImageModel, enabledAccounts, listAccounts, loadSettings, onAccount, profileDir, saveSettings, setAccountEnabled } from "./accounts.js";
 import { getFlowPage } from "./chrome.js";
 import { differenceMatte } from "./matte.js";
-import { JobQueue, type Job } from "./queue.js";
+import { MusicOutcomeUnknownError, generateMusicSong, getMusicState } from "./music.js";
+import { JobQueue, type Job, type Lane } from "./queue.js";
 import { projectDirIn } from "./paths.js";
 import { BIN, COMPUTER, moveToBin } from "./platform.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
@@ -535,9 +536,10 @@ export const shapes = {
 
 type Args<K extends keyof typeof shapes> = z.infer<z.ZodObject<(typeof shapes)[K]>>;
 
-export const jobView = ({ id, status, params, files, attempts, credits, progress, note, error, failed_scenes, account }: Job) => ({
+export const jobView = ({ id, status, params, files, attempts, credits, progress, note, error, failed_scenes, account, outcome_unknown }: Job) => ({
   id,
   status,
+  ...(params.lane && params.lane !== "flow" ? { lane: params.lane } : {}),
   ...(account ?? params.account ? { account: account ?? params.account } : {}),
   project: params.output_dir,
   scene: params.file_stem,
@@ -549,6 +551,7 @@ export const jobView = ({ id, status, params, files, attempts, credits, progress
   note,
   error,
   failed_scenes,
+  ...(outcome_unknown ? { outcome_unknown } : {}),
 });
 
 // One implementation runs in whichever process owns the Flow tab; the other process talks to it over HTTP (remote.ts).
@@ -638,11 +641,16 @@ export class LocalCore implements Core {
   }
 
   // One worker per (enabled account, lane), all running at once; each job runs inside its account, so every browser
-  // step (getFlowPage, downloads) goes to that account's own Chrome.
+  // step (getFlowPage, getMusicPage, downloads) goes to that account's own Chrome.
   private queue: JobQueue = new JobQueue((job, account) => onAccount(account, () => this.run(job)), {
     accounts: () => enabledAccounts().map((a) => a.name),
     ready: (account, lane) => {
-      if (lane === "music") return Promise.resolve(undefined);
+      if (lane === "music") {
+        return onAccount(account, async () => {
+          const state = await getMusicState({ readCredits: false });
+          return state.signedIn ? undefined : state.hint;
+        });
+      }
       return onAccount(account, async () => {
         const state = await getFlowState();
         return state.signedIn && state.inProject ? undefined : state.hint;
@@ -652,7 +660,7 @@ export class LocalCore implements Core {
   });
 
   private async run(job: Job): Promise<string[]> {
-    if (job.params.lane === "music") throw new Error("Flow Music generation is not available yet.");
+    if (job.params.lane === "music") return this.runMusic(job);
     const { chain_from, reference_from } = job.params;
     if (reference_from) {
       const still = this.queue.get(reference_from)?.files.find((f) => /\.(jpe?g|png|webp)$/i.test(f));
@@ -680,11 +688,40 @@ export class LocalCore implements Core {
     return runGeneration(job);
   }
 
-  // Calls that drive one account's Flow tab directly (not through the queue) run on the account asked for, or the first
-  // one, and wait for nothing: if that account's Chrome is in the middle of a job they say so instead.
-  private direct<T>(account: string | undefined, work: () => Promise<T>): Promise<T> {
+  private async runMusic(job: Job): Promise<string[]> {
+    if (!job.params.music) throw new Error("Missing Flow Music parameters for music job.");
+    try {
+      const res = await generateMusicSong(
+        job.params.music,
+        job.params.max_credits,
+        join(job.params.output_dir, job.params.file_stem),
+        (progress) => {
+          job.progress = progress;
+        },
+      );
+      if (res.credits_spent !== undefined) job.credits = res.credits_spent;
+      const summary = [res.clip.title, res.clip.seconds ? `${res.clip.seconds}s` : "", `id:${res.clip.id}`].filter(Boolean).join(" · ");
+      if (res.credits_spent !== undefined && res.credits_spent > job.params.max_credits) {
+        job.note = `Warning: song cost ${res.credits_spent} credits, above max_credits=${job.params.max_credits}. Remaining queued music jobs were stopped. (${summary})`;
+        this.queue.failQueuedLane("music", "a song cost more than its limit; nothing more was started");
+      } else {
+        job.note = summary;
+      }
+      return res.files;
+    } catch (err) {
+      if (err instanceof MusicOutcomeUnknownError) job.outcome_unknown = true;
+      throw err;
+    }
+  }
+
+  // Calls that drive one account's site window directly (not through the queue) run on the account asked for, or the
+  // first one, and wait for nothing: if that account's lane is in the middle of a job they say so instead.
+  private direct<T>(account: string | undefined, work: () => Promise<T>, lane: Lane = "flow"): Promise<T> {
     const target = account ? accountByName(account) : defaultAccount();
-    if (this.queue.busyOn(target.name)) return Promise.reject(new Error(`${BUSY} (account "${target.name}")`));
+    if (this.queue.busyOn(target.name, lane)) {
+      const msg = lane === "music" ? "A song is generating in the Flow Music window. Wait for it to finish (flow_wait), then retry." : BUSY;
+      return Promise.reject(new Error(`${msg} (account "${target.name}")`));
+    }
     return onAccount(target, work);
   }
 
@@ -745,7 +782,10 @@ export class LocalCore implements Core {
     const output_dir = projectDir(project);
     // Continue numbering after whatever is already on disk or queued, so reruns never overwrite earlier scenes.
     const onDisk = existsSync(output_dir) ? readdirSync(output_dir).map((f) => Number(f.match(/^scene-(\d+)/)?.[1] ?? 0)) : [];
-    const queued = this.queue.list().filter((j) => j.params.output_dir === output_dir).map(lastNumber);
+    const queued = this.queue
+      .list()
+      .filter((j) => j.params.output_dir === output_dir && j.params.file_stem.startsWith("scene-"))
+      .map(lastNumber);
     const offset = Math.max(0, ...onDisk, ...queued);
     const lookAccount = account ? accountByName(account) : defaultAccount();
     const jobs: Job[] = [];
@@ -815,11 +855,22 @@ export class LocalCore implements Core {
   }
 
   async retry({ job_ids }: Args<"retry">) {
+    const explicit = Boolean(job_ids?.length);
     const ids = job_ids ?? this.queue.list().filter((j) => j.status === "failed" || j.failed_scenes?.length).map((j) => j.id);
     const jobs: Job[] = [];
+    const skippedUnknown: Job[] = [];
     for (const id of ids) {
       const job = this.queue.get(id);
       const p = job?.params;
+      if (job?.outcome_unknown) {
+        if (explicit) {
+          throw new Error(
+            `Job ${job.id} (${job.params.file_stem}) timed out after Generate was pressed, so the song may already exist in Flow Music. Check flow_music_songs and use flow_music_download instead of retrying and spending credits twice.`,
+          );
+        }
+        skippedUnknown.push(job);
+        continue;
+      }
       if (job?.failed_scenes?.length && p?.agent_scenes && job.status === "done") {
         // A batch that finished with some images still failed: make just those again, under their own scene numbers,
         // instead of re-running the whole batch. The list moves to the new job, so it is never retried twice.
@@ -842,8 +893,23 @@ export class LocalCore implements Core {
       const again = this.queue.retry(id);
       if (again) jobs.push(again);
     }
-    if (!jobs.length) throw new Error("Nothing to retry: no failed jobs, and no batch with failed images.");
-    return { jobs: jobs.map(jobView) };
+    if (!jobs.length) {
+      if (skippedUnknown.length) {
+        throw new Error(
+          `Skipped ${skippedUnknown.map((j) => `${j.id} (${j.params.file_stem})`).join(", ")} because Generate was already pressed and the outcome is unknown. Check flow_music_songs and use flow_music_download instead of retrying.`,
+        );
+      }
+      throw new Error("Nothing to retry: no failed jobs, and no batch with failed images.");
+    }
+    return {
+      jobs: jobs.map(jobView),
+      ...(skippedUnknown.length
+        ? {
+            skipped_unknown_outcome: skippedUnknown.map((j) => j.id),
+            note: "Some timed-out song job(s) were not retried because Generate was already pressed; check flow_music_songs first.",
+          }
+        : {}),
+    };
   }
 
   async assets({ kind, recursive, collection, account }: Args<"assets">) {

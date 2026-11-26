@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
+import type { MusicParams } from "./music-parse.js";
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export type Lane = "flow" | "music";
 
 export interface SceneParams {
   prompt: string;
-  type: "video" | "image";
+  type: "video" | "image" | "audio";
   max_credits: number;
   // Which site lane drives this job: "flow" (default) or "music". Different lanes on the same account run in parallel.
   lane?: Lane;
+  // Parameters for Flow Music compose-panel jobs (music lane only).
+  music?: MusicParams;
   duration?: number;
   resolution?: "360p" | "720p";
   model?: string;
@@ -62,6 +65,9 @@ export interface Job {
   failed_scenes?: number[];
   // The account that took the job, set when it starts.
   account?: string;
+  // Set when Generate was already pressed and the outcome could not be confirmed before timing out, so flow_retry
+  // refuses to silently generate a duplicate and spend credits twice.
+  outcome_unknown?: boolean;
   createdAt: string;
   finishedAt?: string;
 }
@@ -199,6 +205,21 @@ export class JobQueue {
       this.kick();
     }
     return job;
+  }
+
+  // Fails every currently queued job on one lane with `reason` (for example after a song's measured credit spend
+  // exceeded max_credits so nothing else on the music lane starts).
+  failQueuedLane(lane: Lane, reason: string): number {
+    let stopped = 0;
+    const now = new Date().toISOString();
+    for (const job of this.jobs.values()) {
+      if (job.status !== "queued" || laneOf(job) !== lane) continue;
+      job.status = "failed";
+      job.error = reason;
+      job.finishedAt = now;
+      stopped++;
+    }
+    return stopped;
   }
 
   // Wakes a worker for every enabled account on every lane that has queued work; each stops when its lane is empty.
