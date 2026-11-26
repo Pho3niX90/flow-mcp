@@ -67,10 +67,23 @@ cat > /usr/local/bin/flow-container-start <<'EOF'
 set -eu
 : "${FLOW_VNC_PASSWORD:?Set FLOW_VNC_PASSWORD for interactive login (VNC uses the first 8 characters)}"
 mkdir -p /data/config /data/output /tmp/flow-vnc
+chmod 700 /tmp/flow-vnc
 x11vnc -storepasswd "$FLOW_VNC_PASSWORD" /tmp/flow-vnc/passwd >/dev/null
+chmod 600 /tmp/flow-vnc/passwd
 unset FLOW_VNC_PASSWORD
 Xvfb "$DISPLAY" -screen 0 1440x900x24 -nolisten tcp &
 xvfb_pid=$!
+x_sock="/tmp/.X11-unix/X${DISPLAY#:}"
+i=0
+while [ ! -S "$x_sock" ] && [ "$i" -lt 50 ]; do
+  kill -0 "$xvfb_pid" 2>/dev/null || { echo "Xvfb exited before creating $x_sock" >&2; exit 1; }
+  sleep 0.1
+  i=$((i + 1))
+done
+if [ ! -S "$x_sock" ]; then
+  echo "Timed out waiting for Xvfb socket $x_sock" >&2
+  exit 1
+fi
 x11vnc -display "$DISPLAY" -rfbauth /tmp/flow-vnc/passwd -rfbport 5900 -localhost -forever -shared -quiet &
 vnc_pid=$!
 websockify --web=/usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 &
