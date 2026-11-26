@@ -1,13 +1,14 @@
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { CDPSession, Locator, Page } from "playwright-core";
-import { accountDir, collectionsDir, currentAccount, defaultImageModel, downloadDir, looksFile, voicesFile } from "./accounts.js";
+import type { Locator, Page } from "playwright-core";
+import { accountDir, collectionsDir, currentAccount, defaultImageModel, looksFile, voicesFile } from "./accounts.js";
 import { AGENT_BUTTON_RE, AGENT_ONLY_COMPOSER_ERROR, AGENT_SWITCH_RE, classifyAgentToggleState, isAgentOnlyComposer } from "./agent-toggle.js";
 import { FLOW_URL, OUTPUT_ROOT, ensureEnglish, getFlowPage, inEnglish } from "./chrome.js";
-import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDownloads, type DownloadWatch } from "./downloads.js";
+import { FREE_UPSCALE } from "./downloads.js";
 import type { Job } from "./queue.js";
 import { buildCollectionTree, findCollection, parentPath, refOf, splitLibraryRef, type FlowCollection } from "./library.js";
 import { matchScenes, matchSent } from "./match.js";
+import { downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
 import { isProjectGridUrl, validateProjectTitle } from "./paths.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
 import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseVoiceFromSnapshot } from "./tiles.js";
@@ -952,99 +953,6 @@ function tileByIdOrTitle(page: Page, id: string, title?: string): TileResolver {
   };
 }
 
-// Each account's Chrome saves into its own folder ("main" keeps <HOME_DIR>/downloads).
-const ownDownloads = () => downloadDir(currentAccount());
-
-// Accounts run at the same time, but downloads take turns: a file that slips past the override lands in the shared
-// ~/Downloads, and with two accounts downloading at once either watcher could claim the other's file. A download is a
-// few seconds, so taking turns costs little.
-let downloadTurn: Promise<unknown> = Promise.resolve();
-function oneDownloadAtATime<T>(work: () => Promise<T>): Promise<T> {
-  const mine = downloadTurn.then(work, work);
-  downloadTurn = mine.catch(() => {});
-  return mine;
-}
-
-// Download names Chrome announced on Flow's page, newest last, kept PER PAGE so two accounts cannot vouch for each
-// other's files in ~/Downloads (see downloads.ts).
-const announcedByPage = new WeakMap<Page, { name: string; at: number }[]>();
-const listening = new WeakSet<Page>();
-const downloadSessions = new WeakMap<Page, CDPSession>();
-
-async function applyDownloadDir(cdp: CDPSession, dir: string): Promise<boolean> {
-  const behaviour = { behavior: "allowAndName", downloadPath: dir, eventsEnabled: true } as const;
-  if (await cdp.send("Browser.setDownloadBehavior", behaviour).then(() => true, () => false)) return true;
-  // Chrome 156 refuses the browser-wide call for the default context (issue #22); the older per-page call may still
-  // be honoured on the same session, and if not, waitForDownloadedFile watches ~/Downloads with provenance checks.
-  return cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dir }).then(() => true, () => false);
-}
-
-// Playwright keeps a download in a per-connection temp file it can delete from under us; pointing Chrome itself at a
-// directory we own makes the bytes ours the moment they land.
-async function useOwnDownloadDir(page: Page): Promise<void> {
-  // Setting this once per process was not enough: another CDP client attaching resets it browser-wide, and Chrome
-  // quietly goes back to ~/Downloads. Every file we "could not download" tonight was sitting there the whole time,
-  // so this is re-asserted before every single download, and again every two seconds while one is awaited: an
-  // upscale takes minutes to start arriving, which left plenty of time for the setting to be reset in between.
-  const dir = ownDownloads();
-  mkdirSync(dir, { recursive: true });
-  if (!listening.has(page)) {
-    listening.add(page);
-    const list: { name: string; at: number }[] = [];
-    announcedByPage.set(page, list);
-    page.on("download", (d) => {
-      list.push({ name: d.suggestedFilename(), at: Date.now() });
-      if (list.length > 50) list.shift();
-    });
-  }
-  // One session per page, kept open and reused. Chrome puts the download folder back to its default when the session
-  // that set it closes, so it is never detached; a new one is opened only when the old one has stopped answering.
-  const open = downloadSessions.get(page);
-  if (open && (await applyDownloadDir(open, dir))) return;
-  const cdp = await page.context().newCDPSession(page);
-  downloadSessions.set(page, cdp);
-  await applyDownloadDir(cdp, dir);
-}
-
-// Everything already sitting in either folder, so a new arrival can be told apart from what was there before.
-function downloadsNow(): DownloadWatch {
-  return snapshotDownloads([ownDownloads(), SYSTEM_DOWNLOADS]);
-}
-
-// Waits for the file Flow is sending to finish arriving and returns it. It is looked for in our own download folder
-// and, for when the override has been reset behind our back, in Chrome's own: there only a file proven to be Flow's
-// is taken, never something else the user happened to download meanwhile.
-async function waitForDownloadedFile(page: Page, before: DownloadWatch, timeoutMs: number): Promise<string> {
-  const dir = ownDownloads();
-  const deadline = Date.now() + timeoutMs;
-  const settled = new SettledFiles();
-  let reasserted = Date.now();
-  while (Date.now() < deadline) {
-    // Every quarter second: an image is there in well under a second, and a size that held still across two checks
-    // still proves Chrome has finished writing it.
-    await pause(page, 250);
-    const announced = announcedByPage.get(page) ?? [];
-    const names = announced.filter((a) => a.at >= before.since).map((a) => a.name);
-    const candidates: { path: string; size: number }[] = [];
-    for (const path of newDownloads(before, dir, SYSTEM_DOWNLOADS, names)) {
-      try {
-        candidates.push({ path, size: statSync(path).size });
-      } catch {
-        // gone again between the listing and the look
-      }
-    }
-    const done = settled.next(candidates);
-    if (done) return done;
-    if (Date.now() - reasserted >= 2000) {
-      reasserted = Date.now();
-      await useOwnDownloadDir(page).catch(() => {});
-    }
-  }
-  throw new Error(
-    "Flow started the download but no file arrived in the tool's folder, and nothing new in ~/Downloads came from Flow. The media is still in Flow: flow_download fetches it again without spending credits.",
-  );
-}
-
 // Flow reveals a tile's controls on a genuine pointer move, so the mouse is driven to the tile itself. It has to be a
 // real MOVE: Chrome emits no pointermove when the pointer is asked to go where it already is, so a second attempt on
 // the same tile hovered NOTHING, the toolbar never appeared, and the right-click fallback raised Chrome's own context
@@ -1063,28 +971,6 @@ async function hoverTile(page: Page, tile: Locator, settleMs = 900): Promise<voi
     await tile.hover();
     await pause(page, settleMs);
   }
-}
-
-// Chrome's "allowAndName" writes each download under a bare id with NO extension, so there is nothing to copy from
-// the filename and everything was landing as .mp4 - including stills, which arrived as clip-01.mp4. Read the first
-// bytes instead and name the file after what it actually is.
-function extensionOf(file: string): string {
-  const head = Buffer.alloc(12);
-  const fd = openSync(file, "r");
-  try {
-    readSync(fd, head, 0, 12, 0);
-  } finally {
-    closeSync(fd);
-  }
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return ".jpeg";
-  if (head[0] === 0x89 && head.subarray(1, 4).toString("latin1") === "PNG") return ".png";
-  if (head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP") return ".webp";
-  if (head.subarray(4, 8).toString("latin1") === "ftyp") return ".mp4";
-  if (head.subarray(0, 4).toString("latin1") === "GIF8") return ".gif";
-  // Flow hands back a ZIP when one tile holds several takes (a generation made at x2-x4): the takes come bundled.
-  if (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) return ".zip";
-  // Anything else is unknown. Naming it .mp4 (the old fallback) made two ZIPs look like broken videos and broke a cut.
-  return ".bin";
 }
 
 // Unpacks a multi-take ZIP into <stem>.mp4, <stem>-v2.mp4, ... - the same names a multi-variant generation gets - so

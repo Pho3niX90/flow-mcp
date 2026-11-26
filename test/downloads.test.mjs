@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { FREE_UPSCALE, SettledFiles, isFlowDownload, newDownloads, originIsFlow, sameDownloadName, snapshotDownloads } from "../dist/downloads.js";
+import { FLOW_ORIGINS, FREE_UPSCALE, MUSIC_ORIGINS, SettledFiles, isFlowDownload, kindOfBytes, newDownloads, originIsFlow, originsForSite, sameDownloadName, snapshotDownloads } from "../dist/downloads.js";
+import { extensionOf } from "../dist/page-downloads.js";
 
 const FROM_FLOW = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://flow.google.com/project/abc\r\nHostUrl=https://flow.google.com/media/xyz\r\n";
 const FROM_ELSEWHERE = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/\r\nHostUrl=https://example.com/report.pdf\r\n";
@@ -88,4 +89,73 @@ test("free upscale guard accepts 2K and 1080p and refuses paid 4K", () => {
   assert.equal(FREE_UPSCALE.test("4K (50 credits)"), false);
   assert.equal(FREE_UPSCALE.test("720p Original size"), false);
   assert.equal(FREE_UPSCALE.test("1K Original size"), false);
+});
+
+test("origin proof separates Flow and Flow Music downloads and rejects look-alike hosts", () => {
+  const fromMusicWww = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://www.flowmusic.app/chat/1\r\nHostUrl=https://storage.googleapis.com/song.mp3\r\n";
+  const fromMusicBare = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://flowmusic.app/download/track.wav\r\n";
+  const lookAlike1 = "ReferrerUrl=https://flowmusic.app.evil.example/\r\n";
+  const lookAlike2 = "HostUrl=https://notflowmusic.app/song.mp3\r\n";
+  const lookAlike3 = "ReferrerUrl=https://flow.google.com.evil.example/\r\n";
+
+  // Flow accepts Flow, rejects Flow Music and look-alikes.
+  assert.equal(originIsFlow(FROM_FLOW, FLOW_ORIGINS), true);
+  assert.equal(originIsFlow(fromMusicWww, FLOW_ORIGINS), false);
+  assert.equal(originIsFlow(fromMusicBare, FLOW_ORIGINS), false);
+  assert.equal(originIsFlow(lookAlike3, FLOW_ORIGINS), false);
+
+  // Flow Music accepts Flow Music (www and bare), rejects Flow and look-alikes.
+  assert.equal(originIsFlow(fromMusicWww, MUSIC_ORIGINS), true);
+  assert.equal(originIsFlow(fromMusicBare, MUSIC_ORIGINS), true);
+  assert.equal(originIsFlow(FROM_FLOW, MUSIC_ORIGINS), false);
+  assert.equal(originIsFlow(lookAlike1, MUSIC_ORIGINS), false);
+  assert.equal(originIsFlow(lookAlike2, MUSIC_ORIGINS), false);
+
+  const watch = { seen: new Set(), since: 1_000_000 };
+  assert.equal(isFlowDownload({ name: "song.mp3", born: 1_000_500, origin: fromMusicWww }, watch, [], originsForSite("music")), true);
+  assert.equal(isFlowDownload({ name: "song.mp3", born: 1_000_500, origin: fromMusicWww }, watch, ["song.mp3"], originsForSite("flow")), false);
+  assert.equal(isFlowDownload({ name: "clip.mp4", born: 1_000_500, origin: FROM_FLOW }, watch, ["clip.mp4"], originsForSite("music")), false);
+});
+
+test("kindOfBytes and extensionOf identify images, videos, archives, audio formats, and unknown bytes", () => {
+  const bytes = (...vals) => Uint8Array.from(vals);
+  const str = (s) => Uint8Array.from(Buffer.from(s, "latin1"));
+
+  // Existing formats unchanged:
+  assert.equal(kindOfBytes(bytes(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10)), ".jpeg");
+  assert.equal(kindOfBytes(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), ".png");
+  assert.equal(kindOfBytes(str("RIFF\x00\x00\x00\x00WEBP")), ".webp");
+  assert.equal(kindOfBytes(str("\x00\x00\x00\x18ftypisom")), ".mp4");
+  assert.equal(kindOfBytes(str("\x00\x00\x00\x18ftypmp42")), ".mp4");
+  assert.equal(kindOfBytes(str("GIF89a")), ".gif");
+  assert.equal(kindOfBytes(bytes(0x50, 0x4b, 0x03, 0x04, 0x14, 0x00)), ".zip");
+  assert.equal(kindOfBytes(str("not a known header")), ".bin");
+  assert.equal(kindOfBytes(new Uint8Array(0)), ".bin");
+
+  // Audio formats:
+  assert.equal(kindOfBytes(str("ID3\x03\x00\x00\x00")), ".mp3");
+  assert.equal(kindOfBytes(bytes(0xff, 0xfb, 0x90, 0x64)), ".mp3");
+  assert.equal(kindOfBytes(bytes(0xff, 0xf3, 0x80, 0x00)), ".mp3");
+  assert.equal(kindOfBytes(bytes(0xff, 0xe3, 0x00, 0x00)), ".mp3");
+  // JPEG FF D8 must never be misread as MP3, nor FF C0 (top 3 bits not all set).
+  assert.equal(kindOfBytes(bytes(0xff, 0xd8, 0xff, 0xdb)), ".jpeg");
+  assert.equal(kindOfBytes(bytes(0xff, 0xc0, 0x00, 0x00)), ".bin");
+  assert.equal(kindOfBytes(str("RIFF\x24\x00\x00\x00WAVEfmt ")), ".wav");
+  assert.equal(kindOfBytes(str("fLaC\x00\x00\x00\x22")), ".flac");
+  assert.equal(kindOfBytes(str("OggS\x00\x02\x00\x00")), ".ogg");
+  assert.equal(kindOfBytes(str("\x00\x00\x00\x20ftypM4A ")), ".m4a");
+  assert.equal(kindOfBytes(str("\x00\x00\x00\x20ftypM4B ")), ".m4a");
+
+  // extensionOf reads from disk and delegates to kindOfBytes.
+  const { root, own } = folders();
+  try {
+    const mp3 = join(own, "bare-id-mp3");
+    const wav = join(own, "bare-id-wav");
+    writeFileSync(mp3, Buffer.from("ID3\x04\x00\x00\x00\x00\x00\x00", "latin1"));
+    writeFileSync(wav, Buffer.from("RIFF\x24\x00\x00\x00WAVEfmt ", "latin1"));
+    assert.equal(extensionOf(mp3), ".mp3");
+    assert.equal(extensionOf(wav), ".wav");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
