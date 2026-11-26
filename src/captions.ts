@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 import { chromeExecutable, HOME_DIR } from "./chrome.js";
-import { FFMPEG_HINT, IS_MAC, IS_WIN, workDir } from "./platform.js";
+import { FFMPEG_HINT, IS_MAC, IS_WIN, ffmpeg, ffprobe, workDir } from "./platform.js";
 
 // Captions in the style short-form apps use, burned into the picture. The words and their timings come from
 // whisper.cpp on this computer; the lettering is drawn by headless Chrome and laid over the video by ffmpeg. Chrome
@@ -15,8 +15,6 @@ import { FFMPEG_HINT, IS_MAC, IS_WIN, workDir } from "./platform.js";
 // Chrome is already a requirement - so the same code runs on a Mac and on Windows with nothing extra to install.
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
-const FFPROBE = process.env.FLOW_MCP_FFPROBE ?? "ffprobe";
 const WHISPER = process.env.FLOW_MCP_WHISPER ?? "whisper-cli";
 // Transcripts and preview stills; the panel is allowed to show pictures from here.
 export const CACHE_DIR = join(HOME_DIR, "captions");
@@ -229,7 +227,7 @@ function fetchModel(kind: SpeechModel): Promise<string> {
 async function probe(file: string, needPicture = true): Promise<{ width: number; height: number; duration: number; audio?: string }> {
   if (!existsSync(file)) throw new Error(`No video at ${file}.`);
   const { stdout } = await run(
-    FFPROBE,
+    ffprobe(),
     ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height:stream_side_data=rotation:stream_tags=rotate:format=duration", "-of", "json", file],
     BIG,
   ).catch((err: NodeJS.ErrnoException) => {
@@ -393,7 +391,7 @@ function loudness(wav: string): number[] {
 // The stretches of a clean narration track that hold speech: everything between silences of 0.6 s or more, with a
 // little air kept either side so no word is clipped.
 async function speechSpans(wav: string): Promise<[number, number][]> {
-  const { stderr } = await run(FFMPEG, ["-v", "info", "-i", wav, "-af", "silencedetect=noise=-40dB:d=0.6", "-f", "null", "-"], BIG);
+  const { stderr } = await run(ffmpeg(), ["-v", "info", "-i", wav, "-af", "silencedetect=noise=-40dB:d=0.6", "-f", "null", "-"], BIG);
   const total = Number(stderr.match(/Duration: (\d+):(\d+):([\d.]+)/)?.slice(1).reduce((t, v) => t * 60 + Number(v), 0) ?? 0);
   const quiet = [...stderr.matchAll(/silence_start: ([\d.]+)[\s\S]*?silence_end: ([\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
   const spans: [number, number][] = [];
@@ -433,7 +431,7 @@ export async function transcribe(video: string, language = "auto"): Promise<Tran
 
   const work = workDir("flow-captions-");
   const wav = join(work, "audio.wav");
-  const extract = () => run(FFMPEG, ["-v", "error", "-y", "-i", clean ?? video, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], BIG);
+  const extract = () => run(ffmpeg(), ["-v", "error", "-y", "-i", clean ?? video, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], BIG);
   try {
     let lang = asked;
     if (lang === "auto" && !process.env.FLOW_MCP_WHISPER_MODEL) {
@@ -462,7 +460,7 @@ export async function transcribe(video: string, language = "auto"): Promise<Tran
     if (spans?.length) {
       for (const [i, [from, to, onset]] of spans.entries()) {
         const part = join(work, `part-${i}.wav`);
-        await run(FFMPEG, ["-v", "error", "-y", "-ss", from.toFixed(3), "-t", (to - from).toFixed(3), "-i", wav, "-c:a", "pcm_s16le", part], BIG);
+        await run(ffmpeg(), ["-v", "error", "-y", "-ss", from.toFixed(3), "-t", (to - from).toFixed(3), "-i", wav, "-c:a", "pcm_s16le", part], BIG);
         const json = await listen(part, join(work, `part-${i}`));
         heard = json.result?.language ?? heard;
         // whisper tends to start the first word right at the window's edge, in the air before the speech; the detector
@@ -788,7 +786,7 @@ export async function previewCaptions(video: string, opts: CaptionOptions): Prom
   mkdirSync(CACHE_DIR, { recursive: true });
   const key = createHash("sha1").update(video).digest("hex").slice(0, 12);
   const frame = join(CACHE_DIR, `frame-${key}.jpg`);
-  await run(FFMPEG, ["-v", "error", "-y", "-ss", at.toFixed(3), "-i", video, "-frames:v", "1", "-q:v", "3", frame], BIG);
+  await run(ffmpeg(), ["-v", "error", "-y", "-ss", at.toFixed(3), "-i", video, "-frames:v", "1", "-q:v", "3", frame], BIG);
   const background = `data:image/jpeg;base64,${readFileSync(frame).toString("base64")}`;
   const image = join(CACHE_DIR, `preview-${key}.jpg`);
   await withPage(info.width, info.height, pageHtml(o.style, { ...info, position: o.position, size: o.size, color: pickColor(o), letters: lettersOf(o), lang, names: namesIn(words, o.names), background }), async (p) => {
@@ -859,7 +857,7 @@ export async function burnCaptions(video: string, opts: CaptionOptions, output: 
     writeFileSync(join(work, "captions.ffconcat"), lines.join("\n") + "\n");
 
     await run(
-      FFMPEG,
+      ffmpeg(),
       [
         "-v", "error", "-y",
         "-i", video,

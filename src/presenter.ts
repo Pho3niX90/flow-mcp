@@ -3,11 +3,9 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { FFMPEG_HINT, workDir } from "./platform.js";
+import { FFMPEG_HINT, ffmpeg, ffprobe, workDir } from "./platform.js";
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
-const FFPROBE = process.env.FLOW_MCP_FFPROBE ?? "ffprobe";
 
 // A talking presenter over footage, built from one recording of them: each stretch of the recording is shown full
 // frame (optionally with a slow zoom) or in a circle in a corner over another clip. The sound is always the presenter's.
@@ -43,7 +41,7 @@ export interface PresenterOptions {
 const even = (n: number) => Math.round(n / 2) * 2;
 
 async function probe(file: string): Promise<{ width: number; height: number; fps: number; duration: number }> {
-  const { stdout } = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", file]).catch(() => {
+  const { stdout } = await run(ffprobe(), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", file]).catch(() => {
     throw new Error(`Could not read ${file}. ${FFMPEG_HINT}`);
   });
   const j = JSON.parse(stdout);
@@ -67,7 +65,7 @@ async function retimeClip(file: string, stretches: { from: number; to: number; s
   if (at < duration) parts.push({ from: at, to: duration, speed: 1 });
   const filters = parts.map((p, i) => `[0:v]trim=start=${p.from}:end=${p.to},setpts=(PTS-STARTPTS)/${p.speed}[p${i}]`);
   filters.push(`${parts.map((_, i) => `[p${i}]`).join("")}concat=n=${parts.length}:v=1:a=0,fps=${fps},format=yuv420p[v]`);
-  await run(FFMPEG, ["-v", "error", "-y", "-i", file, "-filter_complex", filters.join(";"), "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "15", out]);
+  await run(ffmpeg(), ["-v", "error", "-y", "-i", file, "-filter_complex", filters.join(";"), "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "15", out]);
 }
 
 // The presenter shrinking from full frame into the circle, one frame at a time: the framing, the size, the place and
@@ -102,9 +100,9 @@ async function shrinkClip(o: {
         ? `color=${o.ringColor}:s=${outW + o.ring * 2}x${outH + o.ring * 2},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${radius < 1 ? "255" : `255*clip(${radius + o.ring}-(if(gt(abs(X-${outW / 2 + o.ring})\\,${outW / 2 - radius})*gt(abs(Y-${outH / 2 + o.ring})\\,${outH / 2 - radius})\\,hypot(abs(X-${outW / 2 + o.ring})-${outW / 2 - radius}\\,abs(Y-${outH / 2 + o.ring})-${outH / 2 - radius})\\,${radius + o.ring - 1}))+0.5\\,0\\,1)`}'[r];[bg][r]overlay=${x - o.ring}:${y - o.ring}[b2];[b2][fg]overlay=${x}:${y},format=rgb24[out]`
         : `[bg][fg]overlay=${x}:${y},format=rgb24[out]`,
     ].join(";");
-    await run(FFMPEG, ["-v", "error", "-y", "-ss", (o.backgroundFrom + i / o.fps).toFixed(3), "-i", o.background, "-ss", at.toFixed(3), "-i", o.presenter, "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", join(o.dir, `f${String(i).padStart(4, "0")}.png`)]);
+    await run(ffmpeg(), ["-v", "error", "-y", "-ss", (o.backgroundFrom + i / o.fps).toFixed(3), "-i", o.background, "-ss", at.toFixed(3), "-i", o.presenter, "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", join(o.dir, `f${String(i).padStart(4, "0")}.png`)]);
   }
-  await run(FFMPEG, ["-v", "error", "-y", "-framerate", String(o.fps), "-i", join(o.dir, "f%04d.png"), "-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-pix_fmt", "yuv420p", o.out]);
+  await run(ffmpeg(), ["-v", "error", "-y", "-framerate", String(o.fps), "-i", join(o.dir, "f%04d.png"), "-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-pix_fmt", "yuv420p", o.out]);
 }
 
 const q = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -140,9 +138,9 @@ export async function presenter(o: PresenterOptions): Promise<{ output: string; 
     const circle = (size: number) => `255*clip(${size / 2}-hypot(X-${size / 2}+0.5\\,Y-${size / 2}+0.5)+0.5\\,0\\,1)`;
     const mask = join(work, "mask.png");
     const ringPng = join(work, "ring.png");
-    await run(FFMPEG, ["-v", "error", "-y", "-f", "lavfi", "-i", `color=black:s=${D}x${D}`, "-frames:v", "1", "-vf", `format=gray,geq=lum='${circle(D)}'`, mask]);
+    await run(ffmpeg(), ["-v", "error", "-y", "-f", "lavfi", "-i", `color=black:s=${D}x${D}`, "-frames:v", "1", "-vf", `format=gray,geq=lum='${circle(D)}'`, mask]);
     const c = o.corner?.ring_color ?? "white";
-    await run(FFMPEG, ["-v", "error", "-y", "-f", "lavfi", "-i", `color=${c}:s=${R}x${R}`, "-frames:v", "1", "-vf", `format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${circle(R)}'`, ringPng]);
+    await run(ffmpeg(), ["-v", "error", "-y", "-f", "lavfi", "-i", `color=${c}:s=${R}x${R}`, "-frames:v", "1", "-vf", `format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${circle(R)}'`, ringPng]);
 
     const total = o.segments.reduce((sum, s) => sum + (s.to - s.from), 0);
     // Retime first, once per clip: everything below reads the retimed copy.
@@ -229,7 +227,7 @@ export async function presenter(o: PresenterOptions): Promise<{ output: string; 
     mkdirSync(o.dir, { recursive: true });
     const output = join(o.dir, `${(o.output_name ?? "presenter").replace(/[^\w.-]+/g, "_").replace(/\.mp4$/i, "")}.mp4`);
     args.push("-filter_complex", filters.join(";"), "-map", "[v]", "-map", "[a]", "-r", String(fps), "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output);
-    await run(FFMPEG, args, { maxBuffer: 1 << 24 }).catch((e: { stderr?: string; message: string }) => {
+    await run(ffmpeg(), args, { maxBuffer: 1 << 24 }).catch((e: { stderr?: string; message: string }) => {
       throw new Error(`The presenter video could not be made: ${q(String(e.stderr ?? e.message)).slice(-800)}`);
     });
     return { output, duration: (await probe(output)).duration, segments: o.segments.length };

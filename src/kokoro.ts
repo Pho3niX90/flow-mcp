@@ -7,10 +7,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { HOME_DIR } from "./chrome.js";
+import { ffmpeg, ffprobe } from "./platform.js";
 
 const run = promisify(execFile);
-const FFMPEG = process.env.FLOW_MCP_FFMPEG ?? "ffmpeg";
-const FFPROBE = process.env.FLOW_MCP_FFPROBE ?? "ffprobe";
 const MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const CACHE = join(HOME_DIR, "models", "kokoro");
 const WORKER = join(dirname(fileURLToPath(import.meta.url)), "kokoro-worker.js");
@@ -61,12 +60,12 @@ export function speakWithKokoro(text: string, voice: string, target: string, spe
           );
         },
       );
-      await run(FFMPEG, ["-y", "-i", raw, "-af", "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
+      await run(ffmpeg(), ["-y", "-i", raw, "-af", "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
     } finally {
       rmSync(jobFile, { force: true });
       rmSync(raw, { force: true });
     }
-    const { stdout } = await run(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
+    const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
     return { output: target, duration: Number(stdout.trim()) };
   });
   queue = take.catch(() => undefined);
