@@ -30,11 +30,20 @@ async function size(file: string): Promise<{ width: number; height: number }> {
 // Both takes are decoded at the white take's size, so a model that hands back a slightly different resolution
 // still lines up pixel for pixel.
 async function pixels(file: string, width: number, height: number): Promise<Buffer> {
-  const { stdout } = await run(
-    ffmpeg(),
-    ["-v", "error", "-i", file, "-vf", `scale=${width}:${height}:flags=lanczos`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-    { encoding: "buffer", maxBuffer: MAX_PIXELS * 3 + 1024 },
-  );
+  const decode = () =>
+    run(
+      ffmpeg(),
+      ["-v", "error", "-nostdin", "-i", file, "-vf", `scale=${width}:${height}:flags=lanczos`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+      { encoding: "buffer", maxBuffer: MAX_PIXELS * 3 + 1024 },
+    );
+  // One more go after a moment. On the first live run (2026-11-26) ffmpeg failed here once with nothing on stderr,
+  // on a file it decoded without complaint seconds later, and that one failure threw away a finished pair of takes.
+  const { stdout } = await decode().catch(async (first: NodeJS.ErrnoException & { signal?: string }) => {
+    await new Promise((r) => setTimeout(r, 1500));
+    return decode().catch(() => {
+      throw new Error(`ffmpeg could not read ${file} (exit ${first.code ?? "unknown"}${first.signal ? `, signal ${first.signal}` : ""}). Both takes are saved; run flow_retry on this job to finish the cutout.`);
+    });
+  });
   if (stdout.length !== width * height * 3) throw new Error(`Could not decode ${file}.`);
   return stdout;
 }
@@ -160,7 +169,9 @@ export function computeDifferenceMatte(w: Uint8Array, b: Uint8Array, width: numb
 export async function differenceMatte(onWhite: string, onBlack: string, out: string): Promise<MatteResult> {
   const { width, height } = await size(onWhite);
   if (width * height > MAX_PIXELS) throw new Error(`${width}x${height} is too large for a cutout.`);
-  const [w, b] = await Promise.all([pixels(onWhite, width, height), pixels(onBlack, width, height)]);
+  // One after the other: each is a fraction of a second, and two ffmpeg at once gained nothing.
+  const w = await pixels(onWhite, width, height);
+  const b = await pixels(onBlack, width, height);
   const { rgba, ...stats } = computeDifferenceMatte(w, b, width, height);
   await writePng(rgba, width, height, out);
   return { file: out, ...stats };
