@@ -119,15 +119,17 @@ Start it by double-clicking **Flow Studio.command** (Mac) or **Flow Studio.cmd**
 
 Nine tabs, in the order you'd use them:
 
-1. **Cast**: make characters and pick who's in the scene
-2. **Frames**: free key stills to lock the look before spending anything
+1. **Cast**: make characters and pick who's in the scene. Each character shows its remembered voice, lets you pick a stock voice or copy another character's voice without redrawing the portrait, and can read voices live from Flow
+2. **Frames**: free key stills to lock the look before spending anything, with **Send together** for independent stills, a **Cut-out** card for transparent PNGs (shown on a checkerboard in the gallery), and an image model picker with **Change default**
 3. **Shots**: the paid clips, with a credit ceiling you set, and the card that carries on from a clip you already made
 4. **Voice**: record the narration, free. Your saved narrations are listed here, so you can play them back or delete the ones you don't want. This is also where you paste your free Google AI Studio key. It's checked with Google and saved only on your computer, so you never have to put it in a chat
 5. **Music**: make original songs in Google Flow Music (1 to 3 minutes, instrumental or with lyrics, saved as M4A, MP3 or WAV) or download ones already in your Flow Music library. Runs on its own queue lane, so songs don't wait behind videos
 6. **Restyle**: change a clip you already have
 7. **Cut**: join everything into a finished film. Pick the videos you want, in order (ones you made, or any video you upload), then add a narration and music (from your saved ones or an upload), and turn the clips' own sound down so the voice sits on top
 8. **Captions**: put the words on screen. Pick a video, the language spoken in it (or let it work that out) and a style, choose where the words sit (bottom, middle, top, or tap the preview to put them exactly where you want), how big they are, normal, capital or lowercase letters, and the highlight colour, and you see the result on a real frame of your video before making it. If the computer misheard a word, fix it in the text and the timing stays right; press Enter wherever you want a new caption to start. The first time you pick a video, it downloads a free speech model by itself, once: 148 MB for English, 574 MB for any other language
-9. **Library**: browse what Flow is holding, pull it back for free, or move things to Flow's Trash
+9. **Library**: browse what Flow is holding (including Library collections when you turn on **Include collections**), pull items back for free or download a whole collection as a ZIP, rename media, or move things to Flow's Trash
+
+The header shows your open project with a **Projects** button to switch, rename, or create projects, and clickable project buttons in the top notice whenever no project is open. If you have more than one Google account enabled, an account picker and **Accounts** panel appear beside it.
 
 Progress and a gallery of your saved work sit alongside. The gallery shows stills or clips on the tabs where you'd use them, and on a wide screen each side scrolls on its own.
 

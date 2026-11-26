@@ -175,8 +175,12 @@ or double-click **Flow Studio.command** (Mac), **Flow Studio.cmd** (Windows) or 
 
 Nine tabs, in the order you would use them:
 
-- **Cast**: reusable characters. Create them, edit them in place, or build one from a picture.
-- **Frames**: free stills, with *match previous frame* to keep a set on-model.
+- **Cast**: reusable characters. Create them, edit them in place, or build one from a picture. Each card
+  shows its remembered voice, lets you pick a stock voice or copy another character's voice without redrawing
+  the portrait, and can read voices live from Flow.
+- **Frames**: free stills, with *match previous frame* to keep a set on-model, **Send together** to queue
+  independent stills back to back, a **Cut-out** card for transparent PNGs (shown on a checkerboard in the
+  gallery), and an image model picker with **Change default**.
 - **Shots**: paid clips, with first/last frames, chaining, a live credit estimate, and a card that
   continues a finished clip from its own last frame.
 - **Voice**: free narration with Kokoro (the default: 28 voices, runs on your computer, no key) or Google's
@@ -197,8 +201,14 @@ Nine tabs, in the order you would use them:
   highlight colour, and see it on a real frame of your video before anything is made. Fix any misheard
   word in the text box and it keeps its timing; press Enter to start a new caption. Saves `<name>-captions.mp4` plus an `.srt` for YouTube.
   Everything happens on your computer; nothing is uploaded.
-- **Library**: everything in your Flow project. Download it again for free (a scene comes down as one
-  finished film, not loose clips), or move it to Flow's Trash.
+- **Library**: everything in your Flow project, with an **Include collections** switch to browse folders too.
+  Download items again for free (a scene comes down as one finished film; a collection comes down as a ZIP),
+  rename media in place, or move it to Flow's Trash.
+
+The header shows your open Flow project with a **Projects** panel to switch, rename, or create projects (and
+when no project is open, clickable project buttons right in the top notice). When more than one Google
+account is enabled, an account picker and **Accounts** panel appear beside it so you can choose which account
+to drive or enable and disable accounts.
 
 A progress monitor and a gallery of your saved work sit alongside. The gallery shows stills or clips
 on the tabs that use them. On a wide screen, each side scrolls on its own. Two kinds of delete, clearly
