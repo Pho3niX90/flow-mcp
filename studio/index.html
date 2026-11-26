@@ -170,10 +170,11 @@ input[type=range]{width:100%;accent-color:var(--tally);height:30px}
 .lede{color:var(--dim);font-size:16px;margin:0 0 12px;max-width:70ch}
 .rowbtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
 audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
-.cast-card{display:flex;gap:12px;align-items:center;padding:8px;border:2px solid var(--line);border-radius:10px;background:var(--ink);margin-bottom:8px}
+.cast-card{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:8px;border:2px solid var(--line);border-radius:10px;background:var(--ink);margin-bottom:8px}
 .cast-card img{width:52px;height:52px;object-fit:cover;border-radius:10px;background:#fff;flex:0 0 auto}
 .cast-card b{display:block;font:800 20px var(--display);letter-spacing:.04em}
-.cast-card .grow{flex:1;min-width:0}
+.cast-card .grow{flex:1 1 140px;min-width:0}
+.cast-card .acts{display:flex;gap:6px;flex-wrap:wrap}
 .pickrow{display:grid;gap:8px}
 .capstyles{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px}
 .capstyle{display:flex;flex-direction:column;gap:5px;padding:8px;text-align:left;color:var(--bone);background:var(--ink);border:2px solid var(--line);border-radius:10px;cursor:pointer;font:500 15px var(--body)}
@@ -242,9 +243,10 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           <div class="slots" style="margin-top:10px"><div class="slot" data-slot="cast" data-i="0"></div></div>
           <div class="grid2">
             <div><label class="f">Personality (optional)</label><input type="text" id="castMood" placeholder="Cheerful, clumsy, always in a hurry"></div>
-            <div><label class="f">Voice (optional)</label><select id="castVoice"></select></div>
+            <div><label class="f" for="castVoice">Voice (optional)</label><select id="castVoice"></select></div>
           </div>
-          <div class="rowbtns"><button class="btn" id="castCreate">Create character</button><button class="btn ghost small" id="castReload">Reload</button></div>
+          <div><label class="f" for="castVoiceFrom">Or same voice as (optional)</label><select id="castVoiceFrom"></select></div>
+          <div class="rowbtns"><button class="btn" id="castCreate">Create character</button><button class="btn ghost small" id="castReload">Reload</button><button type="button" class="btn ghost small" id="castReadVoices">Read voices from Flow</button></div>
           <p class="empty" id="castInfo" style="margin-top:12px"></p>
         </div>
       </section>
@@ -609,6 +611,23 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
   <p class="empty" id="imgModelInfo" style="margin-top:8px"></p>
   <div class="lib" id="imgModelList"></div>
 </dialog>
+<dialog id="castVoiceDlg">
+  <div class="dlg-head">
+    <h2 style="margin:0" id="cv_title">Change voice</h2>
+    <button type="button" class="btn small" id="cv_close">Close</button>
+  </div>
+  <p class="empty" id="cv_current" style="margin-top:8px"></p>
+  <div class="phrase">Changing only the voice does not redraw the portrait.</div>
+  <label class="f" for="cv_voice">Pick a stock Flow voice</label>
+  <select id="cv_voice"></select>
+  <div class="rowbtns"><button type="button" class="btn small" id="cv_saveVoice">Save voice</button></div>
+  <div id="cv_fromWrap">
+    <label class="f" for="cv_from">Or use the same voice as another character</label>
+    <select id="cv_from"></select>
+    <div class="rowbtns"><button type="button" class="btn small ghost" id="cv_saveFrom">Use same voice</button></div>
+  </div>
+  <p class="empty" id="cv_info" style="margin-top:10px"></p>
+</dialog>
 <input type="file" id="file" hidden>
 <script>
 const TOKEN = "__FLOW_TOKEN__";
@@ -788,16 +807,66 @@ async function openPicker(mode) {
 $("#pickList").addEventListener("click", (e) => { const b = e.target.closest("button[data-n]"); if (!b) return; setSlot(pickTarget.kind, pickTarget.i, { asset: LIB[+b.dataset.n].name }); picker.close(); });
 
 /* ---------- cast ---------- */
+let castVoiceTarget = "";
 function renderCast() {
+  const curVoice = $("#castVoice")?.value || "";
+  const curFrom = $("#castVoiceFrom")?.value || "";
   $("#castList").innerHTML = CAST.length
-    ? CAST.map((c) => `<div class="cast-card"><img src="${media(c.portrait ?? "")}" onerror="this.style.visibility='hidden'"><div class="grow"><b>${esc(c.name)}</b><span class="empty">use in a frame or shot as a reference</span></div>
-        <button class="btn small ghost" data-castuse="${esc(c.name)}">Use</button><button class="btn small ghost" data-castedit="${esc(c.name)}">Edit</button></div>`).join("")
+    ? CAST.map((c) => `<div class="cast-card"><img src="${media(c.portrait ?? "")}" onerror="this.style.visibility='hidden'"><div class="grow"><b>${esc(c.name)}</b><span class="empty">${c.voice ? `Voice: ${esc(c.voice)}` : "no voice"}</span></div>
+        <div class="acts"><button type="button" class="btn small ghost" data-castuse="${esc(c.name)}">Use</button><button type="button" class="btn small ghost" data-castedit="${esc(c.name)}">Edit</button><button type="button" class="btn small ghost" data-castvoice="${esc(c.name)}">Change voice</button></div></div>`).join("")
     : `<p class="empty">No characters yet — describe one below and Flow will draw it.</p>`;
   const slot = $('[data-slot="cast"]'); if (slot) slot.outerHTML = slotHtml("cast", 0, castImage, "Picture instead of a description");
-  $("#castVoice").innerHTML = `<option value="">No voice</option>` + (VOICES.gemini ?? []).map((v) => `<option value="${v.name}">${v.name} — ${v.description}</option>`).join("");
+  $("#castVoice").innerHTML = `<option value="">No voice</option>` + (VOICES.gemini ?? []).map((v) => `<option value="${esc(v.name)}">${esc(v.name)} — ${esc(v.description)}</option>`).join("");
+  if (curVoice) $("#castVoice").value = curVoice;
+  $("#castVoiceFrom").innerHTML = `<option value="">None</option>` + CAST.map((c) => `<option value="${esc(c.name)}">Same voice as ${esc(c.name)}${c.voice ? ` (${esc(c.voice)})` : ""}</option>`).join("");
+  if (curFrom && CAST.some((c) => c.name === curFrom)) $("#castVoiceFrom").value = curFrom;
 }
+$("#castVoice").addEventListener("change", () => { if ($("#castVoice").value) $("#castVoiceFrom").value = ""; });
+$("#castVoiceFrom").addEventListener("change", () => { if ($("#castVoiceFrom").value) $("#castVoice").value = ""; });
+function openCastVoiceDialog(name) {
+  if (!guard()) return;
+  const char = CAST.find((c) => c.name === name);
+  castVoiceTarget = name;
+  $("#cv_title").textContent = `Voice · ${name}`;
+  $("#cv_current").textContent = char?.voice ? `Remembered voice: ${char.voice}` : "Remembered voice: no voice";
+  $("#cv_info").textContent = "";
+  $("#cv_voice").innerHTML = (VOICES.gemini ?? []).map((v) => `<option value="${esc(v.name)}" ${v.name === char?.voice ? "selected" : ""}>${esc(v.name)} — ${esc(v.description)}</option>`).join("") || `<option value="">No voices loaded</option>`;
+  const others = CAST.filter((c) => c.name !== name);
+  $("#cv_fromWrap").hidden = !others.length;
+  $("#cv_from").innerHTML = others.map((c) => `<option value="${esc(c.name)}">Same voice as ${esc(c.name)}${c.voice ? ` (${esc(c.voice)})` : ""}</option>`).join("");
+  if (!$("#castVoiceDlg").open) $("#castVoiceDlg").showModal();
+}
+$("#cv_close").onclick = () => $("#castVoiceDlg").close();
+$("#cv_saveVoice").onclick = async () => {
+  if (!guard() || !castVoiceTarget) return;
+  const voice = $("#cv_voice").value;
+  if (!voice) return toast("Pick a voice first.", true);
+  const b = $("#cv_saveVoice"); b.disabled = true; b.textContent = "Saving…";
+  $("#cv_info").textContent = "";
+  try {
+    const out = await api("character_edit", { name: castVoiceTarget, voice });
+    toast(`${out.name} voice set to ${out.voice || voice}`);
+    $("#castVoiceDlg").close();
+    CAST = await loadCast(); renderCast();
+  } catch (err) { $("#cv_info").textContent = err.message; toast(err.message, true); }
+  b.disabled = false; b.textContent = "Save voice";
+};
+$("#cv_saveFrom").onclick = async () => {
+  if (!guard() || !castVoiceTarget) return;
+  const voice_from = $("#cv_from").value;
+  if (!voice_from) return toast("Pick a character to copy from.", true);
+  const b = $("#cv_saveFrom"); b.disabled = true; b.textContent = "Saving…";
+  $("#cv_info").textContent = "";
+  try {
+    const out = await api("character_edit", { name: castVoiceTarget, voice_from });
+    toast(`${out.name} voice matched to ${voice_from}${out.voice ? ` (${out.voice})` : ""}`);
+    $("#castVoiceDlg").close();
+    CAST = await loadCast(); renderCast();
+  } catch (err) { $("#cv_info").textContent = err.message; toast(err.message, true); }
+  b.disabled = false; b.textContent = "Use same voice";
+};
 $("#castList").addEventListener("click", async (e) => {
-  const use = e.target.closest("[data-castuse]"), edit = e.target.closest("[data-castedit]");
+  const use = e.target.closest("[data-castuse]"), edit = e.target.closest("[data-castedit]"), voiceBtn = e.target.closest("[data-castvoice]");
   if (use) {
     const group = S.tab === "shots" ? "shots" : "frames";
     const sc = S[group].scenes[0];
@@ -805,6 +874,7 @@ $("#castList").addEventListener("click", async (e) => {
     sc.refs.push({ asset: use.dataset.castuse }); save(); renderAll();
     return toast(`${use.dataset.castuse} added to ${group === "shots" ? "shot" : "frame"} 1`);
   }
+  if (voiceBtn) return void openCastVoiceDialog(voiceBtn.dataset.castvoice);
   if (edit) {
     const change = prompt(`What should change about ${edit.dataset.castedit}?`, "Add white gloves on both hands, keep everything else identical");
     if (!change || !guard()) return;
@@ -813,24 +883,40 @@ $("#castList").addEventListener("click", async (e) => {
     catch (err) { toast(err.message, true); }
   }
 });
-async function loadCast() {
-  const names = await api("characters");
+async function loadCast(opts = {}) {
+  const names = await api("characters", opts.with_voices ? { with_voices: true } : {});
   const outs = await api("outputs").catch(() => ({ projects: [] }));
   const cast = outs.projects.find((p) => p.name === "_cast");
   return names.map((c) => ({ ...c, portrait: cast?.files.find((f) => f.name.toLowerCase().startsWith(c.name.toLowerCase().replace(/[^\w.-]+/g, "_").slice(0, 8)))?.path }));
 }
 $("#castReload").onclick = async () => { if (!guard()) return; try { CAST = await loadCast(); renderCast(); toast(`${CAST.length} character(s)`); } catch (err) { toast(err.message, true); } };
+$("#castReadVoices").onclick = async () => {
+  if (!guard()) return;
+  const est = CAST.length ? ` (~${CAST.length * 8} seconds for ${CAST.length} character${CAST.length > 1 ? "s" : ""})` : "";
+  if (!confirm(`Reading voices from Flow opens each character editor and takes about 8 seconds per character${est}. Continue?`)) return;
+  const b = $("#castReadVoices"); b.disabled = true; b.textContent = "Reading voices…";
+  $("#castInfo").textContent = "Opening each character in Flow to read its voice (about 8 seconds each)…";
+  try {
+    CAST = await loadCast({ with_voices: true });
+    renderCast();
+    $("#castInfo").textContent = `Read voices for ${CAST.length} character(s).`;
+    toast(`Read voices for ${CAST.length} character(s)`);
+  } catch (err) { $("#castInfo").textContent = err.message; toast(err.message, true); }
+  b.disabled = false; b.textContent = "Read voices from Flow";
+};
 $("#castCreate").onclick = async () => {
   if (!guard()) return;
   const name = $("#castName").value.trim(), look = $("#castLook").value.trim();
   if (!name) return toast("Give the character a name.", true);
   if (!look && !castImage) return toast("Describe them, or attach a picture.", true);
+  const voice = $("#castVoice").value || undefined;
+  const voice_from = !voice && $("#castVoiceFrom").value ? $("#castVoiceFrom").value : undefined;
   const b = $("#castCreate"); b.disabled = true; b.textContent = "Drawing…";
   $("#castInfo").textContent = "Flow is drawing the portrait and saving the character…";
   try {
-    const out = await api("character", { name, describe: look || undefined, image: castImage ? (castImage.asset ? `asset:${castImage.asset}` : castImage.path) : undefined, personality: $("#castMood").value.trim() || undefined, voice: $("#castVoice").value || undefined });
+    const out = await api("character", { name, describe: look || undefined, image: castImage ? (castImage.asset ? `asset:${castImage.asset}` : castImage.path) : undefined, personality: $("#castMood").value.trim() || undefined, voice, voice_from });
     $("#castInfo").innerHTML = `Created <b>${esc(out.name)}</b>.${out.portrait ? `<br><img class="out" style="max-width:220px;margin-top:10px;border-radius:12px" src="${media(out.portrait)}">` : ""}`;
-    castImage = null; $("#castName").value = ""; $("#castLook").value = ""; $("#castMood").value = "";
+    castImage = null; $("#castName").value = ""; $("#castLook").value = ""; $("#castMood").value = ""; $("#castVoice").value = ""; $("#castVoiceFrom").value = "";
     CAST = await loadCast(); renderCast();
   } catch (err) { $("#castInfo").textContent = err.message; toast(err.message, true); }
   b.disabled = false; b.textContent = "Create character";
