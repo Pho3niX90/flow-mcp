@@ -6,6 +6,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
 import { CONFIG, OUTPUT_ROOT } from "./config.js";
 import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand } from "./platform.js";
+import { trace } from "./trace.js";
 
 export { HOME_DIR, OUTPUT_ROOT };
 export const FLOW_URL = "https://flow.google.com/";
@@ -162,6 +163,21 @@ export function chromeExecutable(): string {
 // wherever it is. They change nothing about how the page looks or what Google sees of the browser.
 const KEEP_RENDERING = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
 
+// Builds the Chrome launch arguments for one account's profile and debugging port.
+// `--disable-features=Translate` keeps Chrome's page translator from rewriting Flow's DOM labels (upstream issue 4);
+// there must be only one `--disable-features` switch on the command line.
+export function chromeLaunchArgs(profile: string, port: number): string[] {
+  return [
+    `--user-data-dir=${profile}`,
+    `--remote-debugging-port=${port}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-features=Translate",
+    ...KEEP_RENDERING,
+    inEnglish(FLOW_URL),
+  ];
+}
+
 async function launchChrome(a: Account): Promise<number> {
   const chromePath = chromeExecutable();
   const profile = profileDir(a);
@@ -169,14 +185,7 @@ async function launchChrome(a: Account): Promise<number> {
   // Chrome rewrites Preferences from memory while it runs, so the file is only touched when the profile is idle.
   if (!profileInUse(profile)) seedDownloadPreferences(profile, downloadDir(a));
   const port = await freePort(a.port);
-  const args = [
-    `--user-data-dir=${profile}`,
-    `--remote-debugging-port=${port}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    ...KEEP_RENDERING,
-    inEnglish(FLOW_URL),
-  ];
+  const args = chromeLaunchArgs(profile, port);
   // On Windows, MCP servers and background daemons are spawned hidden (SW_HIDE), which child GUI processes inherit
   // unless started with Normal style.
   if (process.platform === "win32") {
@@ -270,19 +279,45 @@ export async function getFlowPage(account: Account = currentAccount()): Promise<
   return page;
 }
 
+const TRANSLATED_HTML_CLASS_RE = /(?:^|\s)translated-(ltr|rtl)(?=\s|$)/i;
+
+// Chrome's built-in page translator adds `translated-ltr` or `translated-rtl` to <html> and wraps labels in <font>,
+// breaking English accessible-name selectors even when the page still looks English (upstream issue 4).
+export function isTranslatedHtmlClass(className: string | null | undefined): boolean {
+  return Boolean(className && TRANSLATED_HTML_CLASS_RE.test(className));
+}
+
+const TRANSLATED_PAGE_ERROR =
+  "Chrome is translating Flow's page, which rewrites button labels so flow-mcp cannot find them. " +
+  "In the Flow Chrome window, click the translate icon in the address bar and choose never to translate this site " +
+  "(or close that window so it is reopened with translation off), then run again.";
+
 // Reloads Flow in English when it is showing in another language (a page the user opened by hand, or Flow redirecting
-// to an address without hl). Sign-in pages are left alone.
+// to an address without hl), and refuses pages being rewritten by Chrome's auto-translator. Sign-in pages are left alone.
 export async function ensureEnglish(page: Page): Promise<void> {
   if (!/^https:\/\/flow\.google\.com\//.test(page.url())) return;
-  const lang = () => page.evaluate(() => document.documentElement.lang).catch(() => "");
-  const now = await lang();
-  if (!now || /^en\b/i.test(now)) return;
+  const readHtml = () =>
+    page
+      .locator("html")
+      .evaluate((el) => ({ lang: el.getAttribute("lang") ?? "", className: el.getAttribute("class") ?? "" }), undefined, { timeout: 3000 })
+      .catch(() => ({ lang: "", className: "" }));
+  const now = await readHtml();
+  if (isTranslatedHtmlClass(now.className)) {
+    trace("ensureEnglish: Chrome page translation detected");
+    throw new Error(TRANSLATED_PAGE_ERROR);
+  }
+  if (!now.lang || /^en\b/i.test(now.lang)) return;
+  trace(`ensureEnglish: reloading from lang="${now.lang}"`);
   await page.goto(inEnglish(page.url()), { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.documentElement.lang, null, { timeout: 15_000 }).catch(() => {});
-  const after = await lang();
-  if (after && !/^en\b/i.test(after)) {
+  const after = await readHtml();
+  if (isTranslatedHtmlClass(after.className)) {
+    trace("ensureEnglish: Chrome page translation detected after reload");
+    throw new Error(TRANSLATED_PAGE_ERROR);
+  }
+  if (after.lang && !/^en\b/i.test(after.lang)) {
     throw new Error(
-      `Flow is showing in "${after}" and would not switch to English. flow-mcp finds Flow's buttons by their English names. ` +
+      `Flow is showing in "${after.lang}" and would not switch to English. flow-mcp finds Flow's buttons by their English names. ` +
         `Add ?hl=en to the end of Flow's address in the Flow Chrome window, or set your Google account's language to English (myaccount.google.com/language).`,
     );
   }

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { chromeLaunchArgs, isTranslatedHtmlClass } from "../dist/chrome.js";
 import { commandLineUses, startProcessCommand } from "../dist/platform.js";
 
 test("an argument with a space is wrapped so Windows passes it as one", () => {
@@ -56,4 +57,23 @@ test("a browser is ours only when it uses this profile folder and this port", ()
   // Elsewhere, case matters.
   assert.equal(commandLineUses("/usr/bin/google-chrome --user-data-dir=/home/me/.flow-mcp/chrome-profile --remote-debugging-port=9333", "/home/me/.flow-mcp/chrome-profile", 9333, false), true);
   assert.equal(commandLineUses("/usr/bin/google-chrome --user-data-dir=/home/Me/.flow-mcp/chrome-profile --remote-debugging-port=9333", "/home/me/.flow-mcp/chrome-profile", 9333, false), false);
+});
+
+test("chromeLaunchArgs disables Chrome page translation with a single --disable-features switch", () => {
+  const args = chromeLaunchArgs("/tmp/profile", 9333);
+  const disableFeatureFlags = args.filter((a) => a.startsWith("--disable-features="));
+  assert.equal(disableFeatureFlags.length, 1);
+  assert.ok(disableFeatureFlags[0].split("=")[1].split(",").includes("Translate"));
+});
+
+test("isTranslatedHtmlClass detects Chrome translated-ltr and translated-rtl classes only", () => {
+  assert.equal(isTranslatedHtmlClass("translated-ltr"), true);
+  assert.equal(isTranslatedHtmlClass("dark translated-rtl compact"), true);
+  assert.equal(isTranslatedHtmlClass("TRANSLATED-LTR"), true);
+  assert.equal(isTranslatedHtmlClass(""), false);
+  assert.equal(isTranslatedHtmlClass(null), false);
+  assert.equal(isTranslatedHtmlClass(undefined), false);
+  assert.equal(isTranslatedHtmlClass("dark-theme"), false);
+  assert.equal(isTranslatedHtmlClass("not-translated-ltr"), false);
+  assert.equal(isTranslatedHtmlClass("translated-ltr-custom"), false);
 });
