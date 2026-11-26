@@ -1,11 +1,11 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
 import { CONFIG, OUTPUT_ROOT } from "./config.js";
-import { CHROME_HINT } from "./platform.js";
+import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand } from "./platform.js";
 
 export { HOME_DIR, OUTPUT_ROOT };
 export const FLOW_URL = "https://flow.google.com/";
@@ -63,14 +63,41 @@ async function browserIdAt(port: number): Promise<string | null> {
 // notes its port and browser id in its own chrome.json ("main" keeps <HOME_DIR>/chrome.json), so any unrelated Chrome
 // that happens to listen on the same port is never attached to or closed.
 export async function ownChrome(account: Account = currentAccount()): Promise<number | null> {
-  let note: { port?: number; id?: string };
+  let note: { port?: number; id?: string } = {};
   try {
     note = JSON.parse(readFileSync(chromeFile(account), "utf8"));
   } catch {
-    return null;
+    // No note yet.
   }
-  if (!Number.isInteger(note.port) || !note.id) return null;
-  return (await browserIdAt(note.port!)) === note.id ? note.port! : null;
+  if (Number.isInteger(note.port) && note.id && (await browserIdAt(note.port!)) === note.id) return note.port!;
+  // No note, or one for a Chrome that has since closed. A Chrome opened by a version from before the note existed is
+  // still Flow Studio's own, and people are told to leave that window open: without this, the first run after an
+  // update found the usual port taken, started a second Chrome on the next one, and that second Chrome handed over to
+  // the open window and exited, so nothing ever answered and the run failed. It is taken as ours only when the system
+  // says the browser on the account's port was started with this account's profile folder.
+  const id = await browserIdAt(account.port);
+  if (!id || !debugBrowserCommandLines().some((line) => commandLineUses(line, profileDir(account), account.port))) return null;
+  noteChrome(account, account.port, id);
+  return account.port;
+}
+
+function noteChrome(account: Account, port: number, id: string): void {
+  const noteFile = chromeFile(account);
+  mkdirSync(dirname(noteFile), { recursive: true });
+  writeFileSync(noteFile, JSON.stringify({ port, id, started: new Date().toISOString() }, null, 2) + "\n");
+}
+
+// Chrome holds a lock in its profile folder while it runs: "lockfile" on Windows, the "SingletonLock" link elsewhere
+// (a link to nothing, so it is looked at without being followed).
+function profileInUse(profile: string): boolean {
+  return ["lockfile", "SingletonLock"].some((name) => {
+    try {
+      lstatSync(join(profile, name));
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 const portFree = (port: number) =>
@@ -132,7 +159,8 @@ async function launchChrome(a: Account): Promise<number> {
   const chromePath = chromeExecutable();
   const profile = profileDir(a);
   mkdirSync(profile, { recursive: true });
-  seedDownloadPreferences(profile, downloadDir(a));
+  // Chrome rewrites Preferences from memory while it runs, so the file is only touched when the profile is idle.
+  if (!profileInUse(profile)) seedDownloadPreferences(profile, downloadDir(a));
   const port = await freePort(a.port);
   const args = [
     `--user-data-dir=${profile}`,
@@ -144,16 +172,7 @@ async function launchChrome(a: Account): Promise<number> {
   // On Windows, MCP servers and background daemons are spawned hidden (SW_HIDE), which child GUI processes inherit
   // unless started with Normal style.
   if (process.platform === "win32") {
-    execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `Start-Process -FilePath '${chromePath.replace(/'/g, "''")}' -ArgumentList ${args.map((arg) => `'${arg.replace(/'/g, "''")}'`).join(",")} -WindowStyle Normal`,
-      ],
-      { stdio: "ignore", windowsHide: true },
-    );
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", startProcessCommand(chromePath, args)], { stdio: "ignore", windowsHide: true });
   } else {
     const child = spawn(chromePath, args, { detached: true, stdio: "ignore" });
     child.unref();
@@ -162,9 +181,7 @@ async function launchChrome(a: Account): Promise<number> {
   for (let i = 0; i < 40; i++) {
     const id = await browserIdAt(port);
     if (id) {
-      const noteFile = chromeFile(a);
-      mkdirSync(dirname(noteFile), { recursive: true });
-      writeFileSync(noteFile, JSON.stringify({ port, id, started: new Date().toISOString() }, null, 2) + "\n");
+      noteChrome(a, port, id);
       return port;
     }
     await new Promise((r) => setTimeout(r, 500));

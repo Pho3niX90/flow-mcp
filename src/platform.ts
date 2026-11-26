@@ -112,6 +112,48 @@ export function powershell(script: string, timeout = 120_000): string {
   });
 }
 
+// The PowerShell command that starts a program in a normal, visible window. Start-Process joins its arguments with
+// spaces and adds no quotes of its own, so an argument holding a space (a Chrome profile under "C:\Users\Jane Doe")
+// reached the program as two: Chrome then used "C:\Users\Jane" as its profile and opened the rest as a web address.
+// Such an argument is wrapped in double quotes, which Windows reads back as one argument.
+export function startProcessCommand(file: string, args: string[]): string {
+  const whole = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
+  return `Start-Process -FilePath ${psQuote(file)} -ArgumentList ${args.map((a) => psQuote(whole(a))).join(",")} -WindowStyle Normal`;
+}
+
+// The command lines of running programs that were started with a remote-debugging port, for telling whose browser is
+// listening on one. Empty when the system would not say.
+export function debugBrowserCommandLines(): string[] {
+  try {
+    const out = IS_WIN
+      ? powershell("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--remote-debugging-port=*' } | ForEach-Object { $_.CommandLine }", 20_000)
+      : execFileSync("ps", ["-axo", "args="], { encoding: "utf8", timeout: 10_000 });
+    // The PowerShell that asks carries the same text in its own command line.
+    return out
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.includes("--remote-debugging-port=") && !l.includes("Get-CimInstance"));
+  } catch {
+    return [];
+  }
+}
+
+// Whether a command line is a browser using this profile folder and this remote-debugging port.
+export function commandLineUses(commandLine: string, profile: string, port: number, win = IS_WIN): boolean {
+  if (!new RegExp(`--remote-debugging-port=${port}(?!\\d)`).test(commandLine)) return false;
+  const flat = (text: string) => {
+    const t = text.replace(/"/g, "").replace(/\\/g, "/");
+    return win ? t.toLowerCase() : t;
+  };
+  const line = flat(commandLine);
+  const want = `--user-data-dir=${flat(profile).replace(/\/+$/, "")}`;
+  const at = line.indexOf(want);
+  if (at < 0) return false;
+  // The folder name has to end there: "...\chrome-profile" must not match "...\chrome-profile-2".
+  const next = line[at + want.length];
+  return next === undefined || next === " " || (next === "/" && [undefined, " "].includes(line[at + want.length + 1]));
+}
+
 // Moves a file, also across drives. renameSync cannot cross volumes (EXDEV): on Windows the tool's download folder is
 // on C: while the output folder is often elsewhere, such as another drive or Google Drive mount. Falls back to
 // copy-then-remove, so the source is only removed once the copy has succeeded.
