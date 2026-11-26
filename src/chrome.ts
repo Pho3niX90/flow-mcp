@@ -155,6 +155,13 @@ export function chromeExecutable(): string {
   return chromePath;
 }
 
+// Chrome slows a window it thinks nobody can see - one covered by other windows, or in the background - to about one
+// drawn frame a second. Every click and hover here first waits for the page to draw a couple of frames, so with the
+// Flow window behind the editor each one took two to three seconds, and a job spent a minute on clicks alone
+// (measured 2026-11-26: 3 frames in 3 s, 16 s to click one tile). These switches keep the window drawing at full speed
+// wherever it is. They change nothing about how the page looks or what Google sees of the browser.
+const KEEP_RENDERING = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
+
 async function launchChrome(a: Account): Promise<number> {
   const chromePath = chromeExecutable();
   const profile = profileDir(a);
@@ -167,6 +174,7 @@ async function launchChrome(a: Account): Promise<number> {
     `--remote-debugging-port=${port}`,
     "--no-first-run",
     "--no-default-browser-check",
+    ...KEEP_RENDERING,
     inEnglish(FLOW_URL),
   ];
   // On Windows, MCP servers and background daemons are spawned hidden (SW_HIDE), which child GUI processes inherit

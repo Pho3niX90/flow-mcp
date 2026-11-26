@@ -10,6 +10,7 @@ import { buildCollectionTree, findCollection, parentPath, refOf, splitLibraryRef
 import { matchScenes, matchSent } from "./match.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
 import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseVoiceFromSnapshot } from "./tiles.js";
+import { trace } from "./trace.js";
 import { matchesModelLabel } from "./video-models.js";
 
 export { matchScenes, matchSent, refOf, type FlowCollection };
@@ -763,6 +764,7 @@ async function uploadAsset(page: Page, job: Job, file: string, label: string): P
     const chooser = page.waitForEvent("filechooser", { timeout: 10_000 });
     await page.getByRole("menuitem", { name: "Upload", exact: true }).click();
     await (await chooser).setFiles(staged);
+    trace("upload: file handed to Flow");
     await waitForUpload(page, name, 90_000);
     return name;
   } finally {
@@ -789,12 +791,14 @@ async function findAssetOption(page: Page, list: Locator, assetName: string): Pr
   const option = optionByName(list, assetName);
   const visible = () => option.isVisible().catch(() => false);
   if (await visible()) return option;
+  trace("attach: not among the first shown, searching");
 
   const search = page.getByPlaceholder("Search assets");
   if (await search.isVisible().catch(() => false)) {
     await search.fill(assetName);
     await pause(page, 1500);
     if (await visible()) return option;
+    trace("attach: search did not show it, scrolling the list");
     await search.fill("");
     await pause(page, 1000);
   }
@@ -836,6 +840,7 @@ export async function attachAsset(page: Page, opener: Locator, assetName: string
     opened = await Promise.race([shows(list, 5000), shows(all, 5000)]);
   }
   if (!opened) throw new Error(`Flow's media picker did not open (three tries) while attaching "${assetName}". Nothing was generated.`);
+  trace("attach: picker open");
   // The picker reopens on whichever tab was used last (Characters, after a character), so start from All each time.
   if ((await all.isVisible().catch(() => false)) && (await all.getAttribute("aria-selected")) !== "true") {
     await all.click();
@@ -869,21 +874,31 @@ export async function attachAsset(page: Page, opener: Locator, assetName: string
       `Flow's asset list has nothing starting with "${assetName}", after searching it and scrolling it to the end. Nothing was generated. Check the title with flow_assets, or pass an absolute file path instead. The list showed: ${offered.join(" | ") || "(empty)"}`,
     );
   }
+  trace("attach: found in the list");
   await option.waitFor({ state: "visible", timeout: 10_000 });
   await option.click();
+  trace("attach: picked");
   const add = page.getByRole("button", { name: "Add to prompt", exact: true });
-  const viaAdd = await add.waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false);
-  if (viaAdd) await add.click().catch(() => {});
-  const closed = () => list.waitFor({ state: "hidden", timeout: 5000 }).then(() => true, () => false);
+  const closed = (ms = 5000) => list.waitFor({ state: "hidden", timeout: ms }).then(() => true, () => false);
+  // On current Flow the click on the option is enough: the picker closes by itself, yet an "Add to prompt" button
+  // can still be found on the page, and pressing it with no time limit sat out Playwright's 30 s default. Measured
+  // live on 2026-11-26: 30.5 s per reference image, on every job that used one. So the picker is first given a
+  // moment to close on its own, and the button, where it is still needed, gets a few seconds and no more.
+  let viaAdd = false;
+  if (!(await closed(1500))) {
+    viaAdd = await add.waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false);
+    if (viaAdd) await add.click({ timeout: 4000 }).catch(() => {});
+  }
   // A second reference once left the ingredients picker open after "Add to prompt" and the job died here
   // (2026-10-13). Press Add again, then Escape - only in the ingredients picker, where runGeneration counts the
   // attached chips afterwards and stops before spending anything. A frame picker is never escaped out of.
   if (!(await closed()) && viaAdd) {
-    if (await add.isVisible().catch(() => false)) await add.click().catch(() => {});
+    if (await add.isVisible().catch(() => false)) await add.click({ timeout: 4000 }).catch(() => {});
     if (!(await closed())) await page.keyboard.press("Escape");
   }
   await list.waitFor({ state: "hidden", timeout: 5000 });
   await pause(page, 500);
+  trace("attach: picker closed");
 }
 
 async function typePrompt(page: Page, prompt: string): Promise<void> {
@@ -1433,9 +1448,35 @@ async function renameTile(page: Page, tile: Locator, title: string, guard = true
       `Refusing to rename "${existing}" to "${title}": that title was given by this tool to an earlier asset, so this is not the tile the job just made. Nothing was renamed or downloaded.`,
     );
   }
+  // Twice at most. On live Flow (2026-11-26) the grid went on showing Flow's own title for one renamed tile in three
+  // until the page was loaded again; the new title had been saved, but nothing here could tell. So the title is
+  // looked for on the grid afterwards and typed again if it is not there, and "renamed" is only reported when it is.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const typed = await renameOnItemPage(page, tile, title);
+    if (typed === "menu") return true;
+    if (!typed) return false;
+    // flow_rename (no guard) may be renaming a tile far down the grid, which is no longer on screen once the grid
+    // is back at the top; it checks the result itself, over a longer time, with a full scan.
+    if (!guard) return true;
+    const named = page.locator(`flow-grid-tile-container[aria-label="${cssAttrValue(title)}"]`).first();
+    if (await named.waitFor({ state: "attached", timeout: 6000 }).then(() => true, () => false)) return true;
+    trace(`rename: the title did not hold (attempt ${attempt + 1})`);
+  }
+  return false;
+}
+
+// One go at renaming from the item's own page. true: typed and confirmed there. "menu": that page did not open and
+// the tile's own menu was used instead. false: nothing was renamed.
+async function renameOnItemPage(page: Page, tile: Locator, title: string): Promise<boolean | "menu"> {
   try {
     await hoverTile(page, tile);
-    await tile.click();
+    // A plain click at the tile's centre, as downloadScene does. Playwright's own click first waits for the tile to
+    // hold still, which took 16 s on a tile that had just finished (2026-11-26); the plain click opened the page in
+    // under a tenth of a second.
+    const at = await tile.boundingBox();
+    if (at) await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+    else await tile.click();
+    trace("rename: tile clicked");
     // Wait for navigation to the item's own /edit/ page BEFORE looking for "Editable text": the project grid itself
     // has a textbox named "Editable text" for the project title (createProject uses it), so a race here would rename
     // the entire Flow project instead of the tile.
@@ -1444,21 +1485,37 @@ async function renameTile(page: Page, tile: Locator, title: string, guard = true
       // Never touch "Editable text" off /edit/. If we are still on the project grid with the same tile mounted, fall
       // back to that tile's own More options -> Rename menu.
       const onGrid = /^\/project\/[0-9a-f-]{36}\/?$/.test(new URL(page.url()).pathname);
-      if (onGrid && (await tile.count().catch(() => 0)) > 0) return await renameTileViaMenu(page, tile, title);
+      if (onGrid && (await tile.count().catch(() => 0)) > 0) return (await renameTileViaMenu(page, tile, title)) ? "menu" : false;
       return false;
     }
     const box = page.getByRole("textbox", { name: "Editable text" });
     await box.waitFor({ state: "visible", timeout: 8000 });
     await box.click();
     await box.fill(title);
+    // Flow saves the title with a request of its own. Leaving the page before that request has been answered is the
+    // likeliest way a rename gets lost, so its answer is waited for, briefly and without insisting on one.
+    const saved = page.waitForResponse((r) => r.request().method() !== "GET" && r.request().method() !== "OPTIONS", { timeout: 5000 }).then(
+      () => true,
+      () => false,
+    );
     await page.getByRole("button", { name: "Done", exact: true }).click({ timeout: 4000 });
-    await pause(page, 1500);
+    trace(`rename: title typed and confirmed${(await saved) ? ", Flow answered" : ", no answer seen from Flow"}`);
+    await pause(page, 800);
     return true;
-  } catch {
+  } catch (err) {
+    trace(`rename: failed (${err instanceof Error ? err.message.split("\n")[0].slice(0, 120) : err})`);
     await page.keyboard.press("Escape").catch(() => {});
     return false;
   } finally {
+    // Back through Flow's own button, which keeps the page loaded. Loading the grid's address afresh instead threw
+    // away whatever the page had not finished sending; that reload is now only the fallback.
+    if (/\/edit\//.test(new URL(page.url()).pathname)) {
+      await page.getByRole("button", { name: "Back button to go to previous page" }).click({ timeout: 4000 }).catch(() => {});
+      await page.waitForURL((u) => !/\/edit\//.test(u.pathname), { timeout: 8000 }).catch(() => {});
+      await pause(page, 1000);
+    }
     await ensureProjectGrid(page).catch(() => {});
+    trace("rename: back on the grid");
   }
 }
 
@@ -1507,11 +1564,14 @@ async function downloadTileNow(page: Page, target: Locator | TileResolver, targe
         await wanted.click();
       }
       // Upscales are rendered on demand, so they can take minutes to appear.
+      trace(`download: size chosen (attempt ${attempt + 1})`);
       file = await waitForDownloadedFile(page, before, quality === "upscaled" ? 600_000 : 180_000);
+      trace("download: file arrived");
       await page.keyboard.press("Escape");
       await scrollToTop(page);
     } catch (err) {
       lastError = err;
+      trace(`download: attempt ${attempt + 1} failed (${err instanceof Error ? err.message.split("\n")[0].slice(0, 120) : err})`);
       await page.keyboard.press("Escape").catch(() => {});
       await pause(page, 2000);
     }
@@ -1627,6 +1687,7 @@ async function attachReferences(page: Page, job: Job, uploaded?: Map<string, str
   const s = job.params;
   for (const [i, ref] of (s.reference_images ?? []).entries()) {
     const name = uploaded?.get(ref) ?? (await uploadAsset(page, job, ref, `ref${i + 1}`));
+    trace(`reference ${i + 1}: in the project`);
     uploaded?.set(ref, name);
     await attachAsset(page, page.getByRole("button", { name: "Add ingredients to the prompt box" }), name);
   }
@@ -1639,10 +1700,13 @@ async function attachReferences(page: Page, job: Job, uploaded?: Map<string, str
 
 // Drives one generation in the Flow tab and returns the downloaded file paths.
 export async function runGeneration(job: Job): Promise<string[]> {
+  trace(`job ${job.id}: start`);
   const page = await readyComposer();
   const s = job.params;
+  trace("composer ready");
 
   job.credits = await applySettings(page, job);
+  trace(`settings applied, Flow quotes ${job.credits}`);
   if (job.credits > s.max_credits) {
     throw new Error(
       `Flow quotes ${job.credits} credits for this scene, above max_credits=${s.max_credits}. Nothing was generated. Raise max_credits or pick a cheaper model/duration/variants.`,
@@ -1665,6 +1729,7 @@ export async function runGeneration(job: Job): Promise<string[]> {
     s.reference_images = [];
   }
   await attachReferences(page, job);
+  trace("references attached");
 
   await typePrompt(page, s.prompt);
   const start = page.getByRole("button", { name: "Start generation" });
@@ -1672,10 +1737,12 @@ export async function runGeneration(job: Job): Promise<string[]> {
   await scrollToTop(page);
   const before = await mediaIds(page);
   await start.click();
+  trace(`generation started, ${before.length} tiles known`);
 
   const variants = s.variants ?? 1;
   const fresh = await waitForNewMedia(page, before, variants, s.type === "image" ? IMAGE_TIMEOUT_MS : VIDEO_TIMEOUT_MS, job, s.type === "image" ? "image" : "video");
   job.progress = undefined;
+  trace(`${fresh.length} new tile(s) finished`);
 
   mkdirSync(s.output_dir, { recursive: true });
   const files: string[] = [];
@@ -1690,6 +1757,7 @@ export async function runGeneration(job: Job): Promise<string[]> {
     // check throws and takes the whole job down with it rather than quietly destroying another asset's name.
     const newTitle = `${basename(s.output_dir)}-${label}`;
     const renamed = await renameTile(page, mediaTile(page, id), newTitle);
+    trace(`rename ${renamed ? "done" : "not done"}`);
     if (renamed) job.note = [job.note, `renamed in Flow to ${newTitle}`].filter(Boolean).join(" · ");
     await pause(page, 800);
     const stem = join(s.output_dir, label);
@@ -1701,7 +1769,9 @@ export async function runGeneration(job: Job): Promise<string[]> {
     // kept only its first take). The failed ones stay in Flow under their new titles for flow_download.
     try {
       files.push(...(await downloadMedia(page, handle, stem, s.download_quality)));
+      trace("downloaded");
     } catch (err) {
+      trace("download failed");
       firstError ??= err;
       failed.push(`${renamed ? newTitle : label}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2391,7 +2461,7 @@ async function downloadSceneNow(page: Page, scene: FlowAsset, targetStem: string
   const file = await waitForDownloadedFile(page, before, 600_000);
   const target = `${targetStem}${extensionOf(file)}`;
   moveFile(file, target);
-  await page.getByRole("button", { name: "Back button to go to previous page" }).click().catch(() => {});
+  await page.getByRole("button", { name: "Back button to go to previous page" }).click({ timeout: 4000 }).catch(() => {});
   await pause(page, 2000);
   await ensureProjectGrid(page).catch(() => {});
   return [target];
@@ -2501,7 +2571,7 @@ async function pickVoice(page: Page, voice: string): Promise<void> {
   const option = optionByName(list, voice);
   if (!(await option.isVisible().catch(() => false))) {
     const available = (await list.getByRole("option").allInnerTexts()).map((t) => t.split("\n").filter((l) => l && l !== "voice_selection").join(" - "));
-    await dialog.getByRole("button", { name: "Close" }).click().catch(() => {});
+    await dialog.getByRole("button", { name: "Close" }).click({ timeout: 4000 }).catch(() => {});
     throw new Error(`Voice "${voice}" not found. Available: ${available.join("; ")}`);
   }
   await option.click();
@@ -2625,7 +2695,7 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
     const option = optionByName(voices, c.voice);
     if (!(await option.isVisible().catch(() => false))) {
       const available = (await voices.getByRole("option").allInnerTexts()).map((t) => t.split("\n").filter((l) => l && l !== "voice_selection").join(" - "));
-      await dialog.getByRole("button", { name: "Close" }).click().catch(() => {});
+      await dialog.getByRole("button", { name: "Close" }).click({ timeout: 4000 }).catch(() => {});
       throw new Error(`Voice "${c.voice}" not found. Character was created without a voice. Available: ${available.join("; ")}`);
     }
     await option.click();
@@ -2803,7 +2873,7 @@ async function closeAgentSession(page: Page): Promise<void> {
     await closeAgentSettings(page);
   }
   const clear = page.getByRole("button", { name: "Clear prompt" });
-  if (await clear.isVisible().catch(() => false)) await clear.click().catch(() => {});
+  if (await clear.isVisible().catch(() => false)) await clear.click({ timeout: 4000 }).catch(() => {});
   else {
     // No composer to clear is not a failure here: the caller checks for what it needs next and says so properly.
     await page.locator(".ProseMirror").first().click({ timeout: 5000 }).then(
@@ -2923,7 +2993,7 @@ async function agentRound(
     if (Date.now() > deadline) {
       // A tile that hangs must not sink the batch: stop the agent and keep whatever finished.
       timedOut = true;
-      if (await stop.isVisible().catch(() => false)) await stop.click().catch(() => {});
+      if (await stop.isVisible().catch(() => false)) await stop.click({ timeout: 4000 }).catch(() => {});
       await pause(page, 2000);
       break;
     }
@@ -3119,7 +3189,7 @@ export async function runContinue(job: Job): Promise<string[]> {
     await setAgentSettings(page, "Always").catch(() => {});
     await setAgentMode(page, false).catch(() => {});
     const clear = page.getByRole("button", { name: "Clear prompt" });
-    if (await clear.isVisible().catch(() => false)) await clear.click().catch(() => {});
+    if (await clear.isVisible().catch(() => false)) await clear.click({ timeout: 4000 }).catch(() => {});
   }
 }
 
