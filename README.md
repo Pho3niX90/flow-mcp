@@ -15,6 +15,11 @@ Claude / Codex ──stdio──> flow-mcp ──Chrome DevTools Protocol──>
 New here? [GETTING-STARTED.md](GETTING-STARTED.md) takes you from nothing to your first video, step by step, and
 [OVERVIEW.md](OVERVIEW.md) explains what it does in plain English, with no code names.
 
+> **About this repository.** It continues [GTAI-1/flow-mcp](https://github.com/GTAI-1/flow-mcp), where no community
+> pull request has been merged. It carries that project's work up to 21 November 2026, the community pull requests
+> that were waiting there (reviewed and fixed first), and fixes of its own. Issues and pull requests are welcome
+> here. See [What this continuation adds](#what-this-continuation-adds).
+
 ---
 
 ## What you need
@@ -37,7 +42,7 @@ headless or asleep mid-run.
 ## Install
 
 ```bash
-git clone https://github.com/GTAI-1/flow-mcp.git
+git clone https://github.com/Pho3niX90/flow-mcp.git
 cd flow-mcp
 npm install
 npm run build
@@ -320,6 +325,13 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
   `FLOW_MCP_OUTPUT`, `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PROJECT`,
   `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`. Helper programs, if they are not on your PATH:
   `FLOW_MCP_FFMPEG`, `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
+- Everything can live on another drive. `FLOW_MCP_HOME` moves the Chrome profile, downloads, settings and logs;
+  working files for cutting and captions then go to a `tmp` folder inside it (or wherever `FLOW_MCP_TMP` points)
+  instead of the system's temp folder. `FLOW_MCP_OUTPUT` moves the finished films.
+- Downloads go to a folder only this tool uses. If Chrome ever saves one to your own Downloads folder instead, it is
+  taken from there only with proof that it came from Flow; nothing else in that folder is touched.
+- `FLOW_MCP_TRACE=1` writes every step of a job, with how long it took, to stderr (`logs/studio.log` for the
+  background service). Use it to see where a job is slow or where it stopped.
 
 ## If something goes wrong
 
@@ -330,6 +342,8 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 | A clip generated but no file arrived | The media is still in Flow. `flow_download` pulls it back for nothing. Never re-generate and pay twice |
 | Everything times out | The Chrome window was closed, or the machine slept. Reopen it with `npm run login` |
 | `connectOverCDP`: *"Browser context management is not supported"* | Seen on Chrome 156; update Google Chrome to a newer version |
+| Every click takes seconds and jobs crawl | Flow's Chrome window was opened by an older version. Chrome slows a window that is covered by other windows to one frame a second, and this version starts Chrome so that it does not. Close Flow's Chrome window; the next job opens it again |
+| A job is slow or stops and you cannot tell where | Start it with `FLOW_MCP_TRACE=1` and read the steps and their times in the log |
 
 ---
 
@@ -340,7 +354,57 @@ build."* Then fully quit and reopen your assistant app so it loads the new versi
 
 ---
 
+## What this continuation adds
+
+Everything below is on top of upstream as it stood on 21 November 2026.
+
+**Community pull requests, brought in after review.** Each was ported onto current code and committed under its
+author's name, with the fixes it needed as separate commits. The numbers are the pull requests on
+[GTAI-1/flow-mcp](https://github.com/GTAI-1/flow-mcp/pulls).
+
+| | What it brings | By |
+|---|---|---|
+| #1 | `flow-studio start`, `stop` and `status`: Flow Studio as a background service | [neurodata-solutions](https://github.com/neurodata-solutions) |
+| #2 | FFmpeg is found when it was installed after the server started; Antigravity setup | [HRDevelops](https://github.com/HRDevelops) |
+| #6 | Windows narration fix, the Check key button, a clear stop at Flow's image-rights dialog | [amed-12](https://github.com/amed-12) |
+| #8 | `flow_projects`, exact character-name matching, character voices | [srijonsbzsifat](https://github.com/srijonsbzsifat) |
+| #9 | Cut films are tagged Rec.709, so QuickTime no longer washes them out | [lokeshsapkota](https://github.com/lokeshsapkota) |
+| #10 | The open project tab is preferred over Flow's marketing page; Dia on macOS | [Batsirai](https://github.com/Batsirai) |
+| #11 | A failed save no longer downloads the file again; the paid 4K upscale is never picked | [ebotha9](https://github.com/ebotha9) |
+| #13, #14 | Tiles identified by their media id, never by title or position; `flow_rename`; `flow_open_project` | [catabanciu08](https://github.com/catabanciu08) |
+| #15, #17 | `flow_cutout`; several Flow accounts in parallel; a saved default image model | [OussamaToumirt](https://github.com/OussamaToumirt) |
+| #16 | `parallel_images`: image scenes sent back to back | [bleshs](https://github.com/bleshs) |
+| #21 | The queue stops on Flow's "unusual activity" refusal; model names match across renames | [benjamin-ajah](https://github.com/benjamin-ajah) |
+| #23 | Video tiles identified by their signed address; a download fallback for Chrome 156 | [mosesoluwanifise](https://github.com/mosesoluwanifise) |
+| #25 | Linux support; reliable tile hover; agent panel handling | [On-Off-Grid](https://github.com/On-Off-Grid) |
+| #27 | Library collections: list them, walk nested ones, download what is in them | [KaiDream](https://github.com/KaiDream) |
+| #30 | Omni 1.2 model matching whatever the word order, with the first unit tests | [Bl0ck154](https://github.com/Bl0ck154) |
+| #32 | A Docker image | [wachiravit-thitagran](https://github.com/wachiravit-thitagran) |
+| #38 | Flow's renamed agent switch | [inanctelci](https://github.com/inanctelci) |
+| #41 | Renaming from the item's own page, since the grid's Rename stopped saving | [rfpassos](https://github.com/rfpassos) |
+
+Not brought in: #5, #34, #35 and #36 (upstream's own 21 November update does the same), #31 (withdrawn by its
+author), #33 (it skipped the clip length on Omni 1.2) and #29 (its credit estimate undercounted 11 to 15 second clips,
+which would have let a job spend past its limit).
+
+**Fixes made here.**
+
+- A file you download yourself is never taken from your Downloads folder and renamed as a clip.
+- A project called `..` no longer saves outside the films folder.
+- Jobs take about a third of the time: Chrome keeps drawing when its window is covered, and attaching a reference
+  image no longer waits 30 seconds.
+- A failed tile left by an earlier job is not mistaken for a new failure, so Flow's Retry is not pressed on old work.
+- On Windows, Chrome opens in a visible window when the server was started hidden, starts correctly from a folder
+  with a space in its name, and saves to another drive.
+- A Flow Chrome window left open by an older version is found again after updating.
+- `flow_trash` and `flow_rename` refuse whole Library collections.
+- Working files follow `FLOW_MCP_HOME` to another drive.
+- Tests: `npm test` runs them, and they run on Windows, macOS and Linux for every change.
+
 ## Licence and risk
+
+Upstream declares the ISC licence in `package.json` and ships no licence file. This repository keeps that
+declaration, includes the ISC text in [LICENSE](LICENSE), and takes contributions under it.
 
 This automates Flow's web interface. It can break whenever Google changes that interface, and
 automated use may be against Google's terms of service. Use it on your own account, at your own

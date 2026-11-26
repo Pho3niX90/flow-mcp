@@ -1,7 +1,7 @@
 {
   "name": "flow-mcp",
-  "version": "0.1.0",
-  "description": "Local MCP server that drives Google Flow in a dedicated Chrome profile",
+  "version": "0.2.0",
+  "description": "Drive Google Flow from Claude, Codex or a local control panel, on Windows, macOS or Linux, using your Flow credits. A community continuation of GTAI-1/flow-mcp.",
   "main": "index.js",
   "scripts": {
     "test": "tsc && node --test \"test/*.test.mjs\"",
@@ -29,5 +29,13 @@
   "devDependencies": {
     "@types/node": "^26.6.2",
     "typescript": "^7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pho3niX90/flow-mcp.git"
+  },
+  "homepage": "https://github.com/Pho3niX90/flow-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Pho3niX90/flow-mcp/issues"
   }
 }
