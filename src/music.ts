@@ -1,14 +1,17 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { execFile, execFileSync } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Locator, Page, Response } from "playwright-core";
 import { checkNotTranslated, getMusicPage, MUSIC_URL } from "./chrome.js";
 import {
   MUSIC_FORMAT_EXT,
   MUSIC_FORMAT_LABEL,
   checkMusicCreditsBefore,
+  chooseMusicDownloadRoute,
   classifyMusicSignedIn,
   classifyMusicStatus,
   formatMusicLength,
+  isAllowedMusicMediaUrl,
   matchesMusicModel,
   measureMusicSpend,
   parseMusicClipsResponse,
@@ -23,13 +26,16 @@ import {
   type MusicParams,
 } from "./music-parse.js";
 import { downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
-import { moveFile } from "./platform.js";
+import { FFMPEG_HINT, ffmpeg, moveFile, workDir } from "./platform.js";
 import { trace } from "./trace.js";
 
 const SESSION_URL = `${MUSIC_URL}session`;
 const LIBRARY_URL = `${MUSIC_URL}library/my-songs`;
 const SONG_TIMEOUT_MS = 6 * 60_000;
 const DOWNLOAD_TIMEOUT_MS = 90_000;
+const DIRECT_FETCH_TIMEOUT_MS = 3 * 60_000;
+const DIRECT_FETCH_MAX_BYTES = 300 * 1024 * 1024;
+const DIRECT_FETCH_MAX_REDIRECTS = 3;
 // The library loads this many songs at a time.
 const LIBRARY_PAGE = 20;
 
@@ -333,38 +339,232 @@ async function closeMenus(page: Page): Promise<void> {
   await page.keyboard.press("Escape").catch(() => {});
 }
 
-// Downloads one clip currently shown on `page` (session view or library view) in every requested format.
-async function downloadSongOnPage(page: Page, clipId: string, outputStem: string, formats: MusicFormat[]): Promise<string[]> {
+class UntrustedMediaUrlError extends Error {}
+
+function hasFfmpegAvailable(): boolean {
+  const bin = ffmpeg();
+  if (isAbsolute(bin)) return existsSync(bin);
+  try {
+    execFileSync(bin, ["-version"], { stdio: "ignore", timeout: 5000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Streams an allow-listed HTTPS media file directly to `destFile` without cookies, authorization headers, or holding
+// the file in memory. Refuses non-allow-listed hosts, redirects outside the allow-list, and bodies over 300 MB.
+async function streamDirectMediaToFile(rawUrl: string, destFile: string): Promise<void> {
+  if (!isAllowedMusicMediaUrl(rawUrl)) {
+    throw new UntrustedMediaUrlError(`Refusing direct fetch from untrusted media URL: ${rawUrl}`);
+  }
+  const signal = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
+  let currentUrl = rawUrl.trim();
+  let res: globalThis.Response | undefined;
+  for (let hops = 0; hops <= DIRECT_FETCH_MAX_REDIRECTS; hops++) {
+    res = await fetch(currentUrl, { redirect: "manual", signal });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      await res.body?.cancel().catch(() => {});
+      if (!location) throw new Error(`Direct fetch got HTTP ${res.status} with no Location header.`);
+      const nextUrl = new URL(location, currentUrl).toString();
+      if (!isAllowedMusicMediaUrl(nextUrl)) {
+        throw new UntrustedMediaUrlError(`Refusing redirect to untrusted media host: ${new URL(nextUrl).hostname}`);
+      }
+      currentUrl = nextUrl;
+      continue;
+    }
+    break;
+  }
+  if (!res) throw new Error("Direct fetch did not receive a response.");
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`Direct fetch exceeded ${DIRECT_FETCH_MAX_REDIRECTS} redirects.`);
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Direct fetch failed with HTTP ${res.status}.`);
+  }
+  const contentLength = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(contentLength) && contentLength > DIRECT_FETCH_MAX_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Media file is ${Math.round(contentLength / (1024 * 1024))} MB, above the ${DIRECT_FETCH_MAX_BYTES / (1024 * 1024)} MB safety limit.`);
+  }
+  if (!res.body) throw new Error("Direct fetch returned an empty response body.");
+
+  const out = createWriteStream(destFile);
+  const reader = res.body.getReader();
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || !value.byteLength) continue;
+      total += value.byteLength;
+      if (total > DIRECT_FETCH_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`Media stream exceeded the ${DIRECT_FETCH_MAX_BYTES / (1024 * 1024)} MB safety limit.`);
+      }
+      if (!out.write(value)) {
+        await new Promise<void>((resolve, reject) => {
+          out.once("drain", resolve);
+          out.once("error", reject);
+        });
+      }
+    }
+    await new Promise<void>((resolve, reject) => {
+      out.once("finish", resolve);
+      out.once("error", reject);
+      out.end();
+    });
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    out.destroy();
+    await new Promise<void>((resolve) => out.once("close", resolve));
+    throw err;
+  }
+}
+
+function convertM4aToMp3(inputM4a: string, outputMp3: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      ffmpeg(),
+      ["-nostdin", "-v", "error", "-y", "-i", inputM4a, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", outputMp3],
+      { timeout: DIRECT_FETCH_TIMEOUT_MS, windowsHide: true },
+      (err, _stdout, stderr) => {
+        if (!err) return resolve();
+        const detail = stderr?.trim() || err.message;
+        reject(new Error(`FFmpeg MP3 conversion failed: ${detail}`));
+      },
+    );
+  });
+}
+
+// Fallback path: downloads one format of a clip through Flow Music's page menu. Keeps oneDownloadAtATime because
+// Chrome's download folder is shared across tabs/accounts.
+async function downloadSongFormatOnPage(page: Page, clipId: string, outputStem: string, fmt: MusicFormat): Promise<string> {
   mkdirSync(dirname(outputStem), { recursive: true });
+  const label = MUSIC_FORMAT_LABEL[fmt];
+  const expectedExt = MUSIC_FORMAT_EXT[fmt];
+  trace(`music: downloading ${clipId} as ${label} via page menu`);
+  return oneDownloadAtATime(async () => {
+    await useOwnDownloadDir(page);
+    const before = downloadsNow();
+    try {
+      const more = await moreOptionsButtonForClip(page, clipId);
+      await more.click({ timeout: 5000 });
+      await pressMenuItem(page, menuOption(page, "Download"), `"Download" for song "${clipId}"`);
+      await pressMenuItem(page, menuOption(page, label), `Format "${label}" for song "${clipId}"`);
+      const arrived = await waitForDownloadedFile(page, before, DOWNLOAD_TIMEOUT_MS, "music");
+      const actualExt = extensionOf(arrived);
+      if (actualExt !== expectedExt) {
+        throw new Error(
+          `Requested ${label} (${expectedExt}) for song "${clipId}", but Flow Music downloaded ${actualExt}; left untouched at ${arrived}.`,
+        );
+      }
+      const dest = `${outputStem}${actualExt}`;
+      moveFile(arrived, dest);
+      trace(`music: saved ${dest}`);
+      return dest;
+    } finally {
+      await closeMenus(page);
+    }
+  });
+}
+
+// Saves one clip in every requested format. Prefers direct streaming HTTPS fetch for m4a/wav and local FFmpeg
+// conversion for mp3 (no Chrome multi-download throttle, no global download lock); falls back to Flow Music's page
+// menu when a URL is missing, outside the allow-list, or when FFmpeg is unavailable for MP3.
+async function saveSongFormats(
+  page: Page,
+  clip: MusicClip,
+  outputStem: string,
+  formats: MusicFormat[],
+  ensureOnPage?: () => Promise<void>,
+): Promise<string[]> {
+  mkdirSync(dirname(outputStem), { recursive: true });
+  const hasFfmpeg = formats.includes("mp3") ? hasFfmpegAvailable() : false;
   const files: string[] = [];
+  let savedM4aPath: string | undefined;
+
+  const fallbackToMenu = async (fmt: MusicFormat, reason: "no_ffmpeg" | "no_url" | "untrusted_url"): Promise<string> => {
+    if (ensureOnPage) await ensureOnPage();
+    try {
+      return await downloadSongFormatOnPage(page, clip.id, outputStem, fmt);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      if (fmt === "mp3" && reason === "no_ffmpeg") {
+        throw new Error(`MP3 download failed (${detail}). MP3 conversion needs FFmpeg (${FFMPEG_HINT}), or ask for m4a or wav instead.`);
+      }
+      throw err;
+    }
+  };
+
   for (const fmt of formats) {
-    const label = MUSIC_FORMAT_LABEL[fmt];
     const expectedExt = MUSIC_FORMAT_EXT[fmt];
-    trace(`music: downloading ${clipId} as ${label}`);
-    const saved = await oneDownloadAtATime(async () => {
-      await useOwnDownloadDir(page);
-      const before = downloadsNow();
-      try {
-        const more = await moreOptionsButtonForClip(page, clipId);
-        await more.click({ timeout: 5000 });
-        await pressMenuItem(page, menuOption(page, "Download"), `"Download" for song "${clipId}"`);
-        await pressMenuItem(page, menuOption(page, label), `Format "${label}" for song "${clipId}"`);
-        const arrived = await waitForDownloadedFile(page, before, DOWNLOAD_TIMEOUT_MS, "music");
-        const actualExt = extensionOf(arrived);
+    const route = chooseMusicDownloadRoute(clip, fmt, hasFfmpeg);
+    if (route.route === "menu") {
+      if (route.reason === "untrusted_url") {
+        trace(`music: untrusted media URL for ${clip.id} ${fmt}, falling back to page menu`);
+      } else if (route.reason === "no_ffmpeg") {
+        trace(`music: ffmpeg not found for ${clip.id} mp3, falling back to page menu`);
+      }
+      const dest = await fallbackToMenu(fmt, route.reason);
+      if (fmt === "m4a") savedM4aPath = dest;
+      files.push(dest);
+      continue;
+    }
+
+    const work = workDir("flow-music-dl-");
+    try {
+      if (route.route === "direct") {
+        trace(`music: fetching ${clip.id} ${fmt} directly`);
+        const tmpFile = join(work, `raw.${fmt}`);
+        await streamDirectMediaToFile(route.url, tmpFile);
+        const actualExt = extensionOf(tmpFile);
         if (actualExt !== expectedExt) {
-          throw new Error(
-            `Requested ${label} (${expectedExt}) for song "${clipId}", but Flow Music downloaded ${actualExt}; left untouched at ${arrived}.`,
-          );
+          throw new Error(`Direct fetch for ${clip.id} (${fmt}) returned ${actualExt} instead of ${expectedExt}.`);
         }
         const dest = `${outputStem}${actualExt}`;
-        moveFile(arrived, dest);
+        moveFile(tmpFile, dest);
         trace(`music: saved ${dest}`);
-        return dest;
-      } finally {
-        await closeMenus(page);
+        if (fmt === "m4a") savedM4aPath = dest;
+        files.push(dest);
+      } else {
+        // route.route === "convert": MP3 via fetched M4A + local FFmpeg.
+        let m4aInput = savedM4aPath;
+        if (!m4aInput) {
+          trace(`music: fetching ${clip.id} m4a directly`);
+          m4aInput = join(work, "source.m4a");
+          await streamDirectMediaToFile(route.url, m4aInput);
+          const actualExt = extensionOf(m4aInput);
+          if (actualExt !== ".m4a") {
+            throw new Error(`Direct fetch for ${clip.id} (m4a source for mp3) returned ${actualExt} instead of .m4a.`);
+          }
+        }
+        trace("music: converting to mp3");
+        const tmpMp3 = join(work, "out.mp3");
+        await convertM4aToMp3(m4aInput, tmpMp3);
+        const mp3Ext = extensionOf(tmpMp3);
+        if (mp3Ext !== ".mp3") {
+          throw new Error(`FFmpeg conversion for ${clip.id} produced ${mp3Ext} instead of .mp3.`);
+        }
+        const dest = `${outputStem}.mp3`;
+        moveFile(tmpMp3, dest);
+        trace(`music: saved ${dest}`);
+        files.push(dest);
       }
-    });
-    files.push(saved);
+    } catch (err) {
+      if (err instanceof UntrustedMediaUrlError) {
+        trace(`music: ${err.message}; falling back to page menu`);
+        const dest = await fallbackToMenu(fmt, "untrusted_url");
+        if (fmt === "m4a") savedM4aPath = dest;
+        files.push(dest);
+      } else {
+        throw err;
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   }
   return files;
 }
@@ -451,13 +651,14 @@ export async function downloadMusicSongs(
   }
   const files: string[] = [];
   for (const [i, clip] of resolved.entries()) {
-    // Ensure the clip's link is present in the library DOM; scroll if it was beyond the initial viewport.
-    if ((await page.locator(`a[href="/song/${clip.id}"]`).count().catch(() => 0)) === 0) {
+    // Only scroll the library to bring the clip's row into the DOM if a format has to fall back to the page menu.
+    const ensureRow = async () => {
+      if ((await page.locator(`a[href="/song/${clip.id}"]`).count().catch(() => 0)) > 0) return;
       for (let step = 0; step < 5 && (await page.locator(`a[href="/song/${clip.id}"]`).count().catch(() => 0)) === 0; step++) {
         if (!(await scrollLibraryForMore(page))) break;
       }
-    }
-    const downloaded = await downloadSongOnPage(page, clip.id, outputStemForIndex(i), cleanFormats);
+    };
+    const downloaded = await saveSongFormats(page, clip, outputStemForIndex(i), cleanFormats, ensureRow);
     files.push(...downloaded);
   }
   return { clips: resolved, files };
@@ -598,17 +799,20 @@ export async function generateMusicSong(
         throw new Error(`Flow Music failed to generate the song (${failedReason}).`);
       }
       if (completed) {
-        // Wait briefly for the POST /__api/clips record matching completedClipId (or the link in the DOM).
-        if (completedClipId && clipsById.has(completedClipId)) {
-          finishedClip = clipsById.get(completedClipId);
-          break;
-        }
+        // Wait briefly for a POST /__api/clips record matching completedClipId (carrying audio_url / wav_url).
         if (completedClipId) {
-          for (let w = 0; w < 16 && !clipsById.has(completedClipId); w++) await pause(page, 500);
-          finishedClip = clipsById.get(completedClipId) ?? { id: completedClipId, title: title || "Untitled", has_wav: false };
+          for (let w = 0; w < 16; w++) {
+            const rec = clipsById.get(completedClipId);
+            if (rec?.audio_url) {
+              finishedClip = rec;
+              break;
+            }
+            await pause(page, 500);
+          }
+          finishedClip ??= clipsById.get(completedClipId) ?? { id: completedClipId, title: title || "Untitled", has_wav: false };
           break;
         }
-        const firstClip = [...clipsById.values()][0];
+        const firstClip = [...clipsById.values()].find((c) => c.audio_url) ?? [...clipsById.values()][0];
         if (firstClip) {
           finishedClip = firstClip;
           break;
@@ -639,7 +843,7 @@ export async function generateMusicSong(
   const made = finishedClip;
   // From here the song exists and has been paid for. A download that fails must say so, with the song's id, and must
   // not look like a plain failure that flow_retry would answer by making (and paying for) the song a second time.
-  const files = await downloadSongOnPage(page, made.id, outputStem, formats).catch((err: unknown) => {
+  const files = await saveSongFormats(page, made, outputStem, formats).catch((err: unknown) => {
     trace(`music: download failed after generation (${err instanceof Error ? err.message.split("\n")[0].slice(0, 120) : err})`);
     throw new MusicOutcomeUnknownError(
       `The song was made and is in your Flow Music library (id ${made.id}, "${made.title}"), but it could not be downloaded: ${err instanceof Error ? err.message.split("\n")[0] : String(err)} Fetch it with flow_music_download and that id; do not generate it again.`,

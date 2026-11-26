@@ -4,9 +4,11 @@ import { test } from "node:test";
 import {
   MUSIC_OBSERVED_PRICE,
   checkMusicCreditsBefore,
+  chooseMusicDownloadRoute,
   classifyMusicSignedIn,
   classifyMusicStatus,
   formatMusicLength,
+  isAllowedMusicMediaUrl,
   matchesMusicModel,
   measureMusicSpend,
   parseMusicClip,
@@ -76,6 +78,8 @@ test("parseMusicClip and parseMusicClipsResponse handle full and partial API sha
     sound: "warm lo-fi jazz beat, dusty rhodes",
     seed: "98765",
     created_at: "2026-11-26T10:00:00Z",
+    audio_url: "https://example.com/a.m4a",
+    wav_url: "https://example.com/a.wav",
     has_wav: true,
   });
 
@@ -175,4 +179,55 @@ test("parseMusicCredits, parseMusicPlan, credit guards, and resolveMusicSongQuer
   }
   const missing = resolveMusicSongQuery(clips, "Nope");
   assert.equal(missing.ok, false);
+});
+
+test("isAllowedMusicMediaUrl permits only allow-listed https hosts and rejects look-alikes and non-https schemes", () => {
+  assert.equal(isAllowedMusicMediaUrl("https://storage.googleapis.com/producer-app-public/clips/abc.m4a"), true);
+  assert.equal(isAllowedMusicMediaUrl("https://STORAGE.GOOGLEAPIS.COM/producer-app-public/clips/abc.wav"), true);
+
+  for (const bad of [
+    undefined,
+    "",
+    "not a url",
+    "http://storage.googleapis.com/producer-app-public/clips/abc.m4a",
+    "blob:https://www.flowmusic.app/1234",
+    "data:audio/mp4;base64,AAAA",
+    "file:///etc/passwd",
+    "https://storage.googleapis.com.evil.example/clips/abc.m4a",
+    "https://evilstorage.googleapis.com/clips/abc.m4a",
+    "https://example.com/clips/abc.m4a",
+    "https://user:pass@storage.googleapis.com/clips/abc.m4a",
+  ]) {
+    assert.equal(isAllowedMusicMediaUrl(bad), false, `expected reject for ${String(bad)}`);
+  }
+});
+
+test("chooseMusicDownloadRoute picks direct, convert, or menu fallback per format and clip record", () => {
+  const m4aUrl = "https://storage.googleapis.com/producer-app-public/clips/abc.m4a";
+  const wavUrl = "https://storage.googleapis.com/producer-app-public/clips/abc.wav";
+
+  // Full clip record with FFmpeg available.
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "m4a", true), { route: "direct", url: m4aUrl });
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "wav", true), { route: "direct", url: wavUrl });
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "mp3", true), { route: "convert", url: m4aUrl });
+
+  // Without FFmpeg: m4a/wav still go direct; mp3 falls back to menu with reason no_ffmpeg.
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "m4a", false), { route: "direct", url: m4aUrl });
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "wav", false), { route: "direct", url: wavUrl });
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl, wav_url: wavUrl }, "mp3", false), { route: "menu", reason: "no_ffmpeg" });
+
+  // Missing URLs fall back to menu with reason no_url.
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: m4aUrl }, "wav", true), { route: "menu", reason: "no_url" });
+  assert.deepEqual(chooseMusicDownloadRoute({}, "m4a", true), { route: "menu", reason: "no_url" });
+  assert.deepEqual(chooseMusicDownloadRoute({}, "mp3", true), { route: "menu", reason: "no_url" });
+
+  // Untrusted host or non-https URL falls back to menu with reason untrusted_url.
+  assert.deepEqual(chooseMusicDownloadRoute({ audio_url: "https://storage.googleapis.com.evil.example/a.m4a" }, "m4a", true), {
+    route: "menu",
+    reason: "untrusted_url",
+  });
+  assert.deepEqual(chooseMusicDownloadRoute({ wav_url: "http://storage.googleapis.com/a.wav" }, "wav", true), {
+    route: "menu",
+    reason: "untrusted_url",
+  });
 });

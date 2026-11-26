@@ -38,7 +38,50 @@ export interface MusicClip {
   sound?: string;
   seed?: string;
   created_at?: string;
+  audio_url?: string;
+  wav_url?: string;
   has_wav: boolean;
+}
+
+// Hosts from which Flow Music clip audio files may be fetched directly without going through the browser menu.
+export const MUSIC_MEDIA_HOSTS = ["storage.googleapis.com"] as const;
+
+export type MusicDownloadRoute =
+  | { route: "direct"; url: string }
+  | { route: "convert"; url: string }
+  | { route: "menu"; reason: "no_ffmpeg" | "no_url" | "untrusted_url" };
+
+// Allows only plain https: URLs on an allow-listed host (no credentials, no http:, no blob:/data:, no look-alike hosts).
+export function isAllowedMusicMediaUrl(rawUrl: string | undefined, allowedHosts: readonly string[] = MUSIC_MEDIA_HOSTS): boolean {
+  if (!rawUrl || typeof rawUrl !== "string") return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  if (parsed.username || parsed.password) return false;
+  const host = parsed.hostname.toLowerCase();
+  return allowedHosts.some((h) => h.toLowerCase() === host);
+}
+
+// Decides how to obtain one format of a clip: direct HTTPS fetch (m4a/wav), local FFmpeg conversion from fetched m4a
+// (mp3 when ffmpeg is available), or fallback to Flow Music's page menu.
+export function chooseMusicDownloadRoute(
+  clip: Pick<MusicClip, "audio_url" | "wav_url">,
+  format: MusicFormat,
+  hasFfmpeg: boolean,
+  allowedHosts: readonly string[] = MUSIC_MEDIA_HOSTS,
+): MusicDownloadRoute {
+  const rawUrl = format === "wav" ? clip.wav_url : clip.audio_url;
+  if (!rawUrl || !rawUrl.trim()) return { route: "menu", reason: "no_url" };
+  if (!isAllowedMusicMediaUrl(rawUrl, allowedHosts)) return { route: "menu", reason: "untrusted_url" };
+  const url = rawUrl.trim();
+  if (format === "mp3") {
+    return hasFfmpeg ? { route: "convert", url } : { route: "menu", reason: "no_ffmpeg" };
+  }
+  return { route: "direct", url };
 }
 
 export interface MusicCredits {
@@ -115,7 +158,9 @@ export function parseMusicClip(raw: unknown): MusicClip | null {
   const sound = typeof op?.sound_prompt === "string" && op.sound_prompt.trim() ? op.sound_prompt.trim() : undefined;
   const seed = op?.seed !== undefined && op?.seed !== null && String(op.seed).trim() !== "" ? String(op.seed).trim() : undefined;
   const created_at = typeof r.created_at === "string" && r.created_at.trim() ? r.created_at.trim() : undefined;
-  const has_wav = typeof r.wav_url === "string" && r.wav_url.trim().length > 0;
+  const audio_url = typeof r.audio_url === "string" && r.audio_url.trim() ? r.audio_url.trim() : undefined;
+  const wav_url = typeof r.wav_url === "string" && r.wav_url.trim() ? r.wav_url.trim() : undefined;
+  const has_wav = Boolean(wav_url);
 
   return {
     id,
@@ -125,6 +170,8 @@ export function parseMusicClip(raw: unknown): MusicClip | null {
     ...(sound !== undefined ? { sound } : {}),
     ...(seed !== undefined ? { seed } : {}),
     ...(created_at !== undefined ? { created_at } : {}),
+    ...(audio_url !== undefined ? { audio_url } : {}),
+    ...(wav_url !== undefined ? { wav_url } : {}),
     has_wav,
   };
 }
