@@ -208,6 +208,31 @@ async function launchChrome(a: Account): Promise<number> {
   );
 }
 
+const CHROME_156_CONNECT_ERROR_RE = /browser context management is not supported/i;
+
+// Chrome 156 rejects Browser.setDownloadBehavior on the default context inside Playwright's connectOverCDP
+// handshake (upstream issue 22). Recognize that exact failure so the user gets an actionable update message.
+export function isChrome156ConnectError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return CHROME_156_CONNECT_ERROR_RE.test(msg);
+}
+
+export function formatChromeConnectError(err: unknown): unknown {
+  if (!isChrome156ConnectError(err)) return err;
+  return new Error(
+    "Could not attach to Chrome: this is Chrome 156, which refuses a call Playwright makes when attaching " +
+      '("Browser context management is not supported"). Update Google Chrome (this does not happen on Chrome 158) and try again.',
+  );
+}
+
+async function connectOverCDP(port: number): Promise<Browser> {
+  try {
+    return await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  } catch (err) {
+    throw formatChromeConnectError(err);
+  }
+}
+
 export async function getBrowser(account: Account = currentAccount()): Promise<Browser> {
   const key = account.name.toLowerCase();
   const open = browsers.get(key);
@@ -216,7 +241,7 @@ export async function getBrowser(account: Account = currentAccount()): Promise<B
   if (!pending) {
     pending = (async () => {
       const port = (await ownChrome(account)) ?? (await launchChrome(account));
-      const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+      const b = await connectOverCDP(port);
       browsers.set(key, b);
       return b;
     })().finally(() => connecting.delete(key));
@@ -231,7 +256,7 @@ export async function closeChrome(account: Account = currentAccount()): Promise<
   if (!port) return false;
   const key = account.name.toLowerCase();
   const existing = browsers.get(key);
-  const b = existing?.isConnected() ? existing : await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  const b = existing?.isConnected() ? existing : await connectOverCDP(port);
   browsers.delete(key);
   try {
     const session = await b.newBrowserCDPSession();

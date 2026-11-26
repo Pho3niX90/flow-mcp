@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { chromeLaunchArgs, isTranslatedHtmlClass } from "../dist/chrome.js";
+import { chromeLaunchArgs, formatChromeConnectError, isChrome156ConnectError, isTranslatedHtmlClass } from "../dist/chrome.js";
 import { commandLineUses, startProcessCommand } from "../dist/platform.js";
 
 test("an argument with a space is wrapped so Windows passes it as one", () => {
@@ -76,4 +76,21 @@ test("isTranslatedHtmlClass detects Chrome translated-ltr and translated-rtl cla
   assert.equal(isTranslatedHtmlClass("dark-theme"), false);
   assert.equal(isTranslatedHtmlClass("not-translated-ltr"), false);
   assert.equal(isTranslatedHtmlClass("translated-ltr-custom"), false);
+});
+
+test("isChrome156ConnectError recognizes the Chrome 156 CDP error and leaves other errors untouched", () => {
+  const chrome156Err = new Error(
+    "browserType.connectOverCDP: Protocol error (Browser.setDownloadBehavior): Browser context management is not supported.",
+  );
+  assert.equal(isChrome156ConnectError(chrome156Err), true);
+  const wrapped = formatChromeConnectError(chrome156Err);
+  assert.ok(wrapped instanceof Error);
+  assert.match(wrapped.message, /Chrome 156/i);
+  assert.match(wrapped.message, /Update Google Chrome/i);
+  assert.match(wrapped.message, /158/);
+
+  const other = new Error("connect ECONNREFUSED 127.0.0.1:9333");
+  assert.equal(isChrome156ConnectError(other), false);
+  assert.equal(formatChromeConnectError(other), other);
+  assert.equal(isChrome156ConnectError(null), false);
 });
