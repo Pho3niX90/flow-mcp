@@ -1643,6 +1643,15 @@ export interface FlowAsset {
   path?: string;
 }
 
+// The grid scan lists Library collections and characters as well as media. flow_trash and flow_rename act on one
+// image, video or scene: a collection is a whole folder of work, and before the scan listed them neither tool could
+// reach one, so they are refused here rather than quietly becoming things those tools can move or rename.
+function refuseNonMedia(asset: FlowAsset, what: string): void {
+  if (asset.kind === "collection" || asset.kind === "character") {
+    throw new Error(`"${asset.name}" is a ${asset.kind === "collection" ? "Library collection" : "character"}, and only images, videos and scenes can be ${what} from here. Do it in the Flow window.`);
+  }
+}
+
 // Walks the virtualised grid from the top and collects every tile it passes. Recycled tiles sometimes have no
 // media id yet, so entries are keyed by title and the id is filled in from whichever pass saw it.
 // `allMedia: false` scans whatever grid is on screen (a Library collection's page) instead of switching to All media.
@@ -2033,6 +2042,7 @@ export async function trashAsset(name: string): Promise<{ trashed: string }> {
   await ensureProjectGrid(page);
   const same = (await scanGrid(page)).filter((a) => a.name === name);
   if (!same.length) throw new Error(`Nothing in the open project is called "${name}".`);
+  refuseNonMedia(same[0], "moved to Flow's Trash");
   const copies = await countTitled(page, name);
   if (copies > 1) throw new Error(`${copies} items are called "${name}", so it isn't clear which one to trash. Rename one in Flow first.`);
   // Scan again, stopping on the tile so it stays mounted in the virtual grid (no scrollToTop before acting on it).
@@ -2062,6 +2072,7 @@ export async function renameAsset(name: string, newName: string): Promise<{ rena
   const assets = await scanGrid(page);
   const same = assets.filter((a) => a.name === name);
   if (!same.length) throw new Error(`Nothing in the open project is called "${name}". Use flow_assets to list titles.`);
+  refuseNonMedia(same[0], "renamed");
   const copies = await countTitled(page, name);
   if (copies > 1) throw new Error(`${copies} items are called "${name}", so it isn't clear which one to rename. Rename one by hand in Flow first.`);
   if (assets.some((a) => a.name === newName)) throw new Error(`Something in the project is already called "${newName}". Pick a title that is free.`);
@@ -2186,7 +2197,16 @@ async function openCharacter(page: Page, name: string): Promise<void> {
 // The editor shows the voice as a button NAMED after it ("orus"), right before "Play preview" and "Remove". A character
 // without one shows "Select a voice" instead (mapped live 2026-10-19).
 async function readVoice(page: Page): Promise<string | undefined> {
-  return parseVoiceFromSnapshot(await page.locator("main").first().ariaSnapshot());
+  // Short timeout: this also runs after every character is made, and a page without a <main> would otherwise sit
+  // out Playwright's 30 s default before the caller's catch saw it.
+  return parseVoiceFromSnapshot(await page.locator("main").first().ariaSnapshot({ timeout: 5000 }));
+}
+
+// Narrows the voice list with the dialog's search box when it has one. Best effort and quick: fill() waits 30 s for a
+// box that is not there, and the voices shown first are still pickable without it.
+async function searchVoices(dialog: Locator, voice: string): Promise<void> {
+  const box = dialog.getByRole("textbox", { name: "Search assets" }).or(dialog.getByPlaceholder("Search assets")).first();
+  await box.fill(voice, { timeout: 2000 }).catch(() => {});
 }
 
 // Chooses a stock voice in the open character editor. Both the "Select a voice" button and the current voice's button
@@ -2199,7 +2219,7 @@ async function pickVoice(page: Page, voice: string): Promise<void> {
   const dialog = page.getByRole("dialog").first();
   const list = dialog.getByRole("listbox", { name: "Asset list" });
   await list.waitFor({ state: "visible", timeout: 10_000 });
-  await dialog.getByRole("textbox", { name: "Search assets" }).fill(voice).catch(() => {});
+  await searchVoices(dialog, voice);
   await pause(page, 900);
   const option = optionByName(list, voice);
   if (!(await option.isVisible().catch(() => false))) {
@@ -2323,7 +2343,7 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
     const dialog = page.getByRole("dialog").first();
     const voices = dialog.getByRole("listbox", { name: "Asset list" });
     await voices.waitFor({ state: "visible", timeout: 10_000 });
-    await dialog.getByRole("textbox", { name: "Search assets" }).fill(c.voice).catch(() => {});
+    await searchVoices(dialog, c.voice);
     await pause(page, 900);
     const option = optionByName(voices, c.voice);
     if (!(await option.isVisible().catch(() => false))) {
