@@ -257,6 +257,10 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           </div>
           <label class="f">Engine</label><div class="seg" data-seg="f_engine"></div>
           <div class="phrase" id="f_engineNote"></div>
+          <div id="f_parallelWrap">
+            <label class="check"><input type="checkbox" id="f_parallel">Send together</label>
+            <p class="empty" id="f_parallelNote" style="margin-top:4px"></p>
+          </div>
         </div>
         <h2 style="margin-top:18px">Frames <small id="f_count"></small></h2>
         <div id="f_scenes"></div>
@@ -584,7 +588,7 @@ const VIDEO_COST = { "Omni 1.2 Flash": omni12, "Omni 1.1 Flash": { "360p": { 4: 
 const blank = () => ({ prompt: "", technique: "", chain: false, match: false, first: null, last: null, refs: [] });
 const DEFAULTS = {
   tab: "cast",
-  frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", scenes: [blank()] },
+  frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", parallel: false, scenes: [blank()] },
   shots: { project: "MyFilm", model: "Omni 1.2 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 25, scenes: [blank()] },
   narrate: { project: "MyFilm", engine: "kokoro", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
   music: { project: "MyFilm", sound: "", instrumental: true, lyrics: "", title: "", lengthAuto: true, length: 90, bpmAuto: true, bpm: 96, seed: "", model: "", formats: ["m4a"] },
@@ -595,6 +599,8 @@ const S = (() => {
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem("flow-studio-v2") || "{}"); } catch {}
   const merged = Object.assign(structuredClone(DEFAULTS), stored);
+  merged.frames = Object.assign(structuredClone(DEFAULTS.frames), merged.frames || {});
+  merged.frames.parallel = Boolean(merged.frames.parallel);
   merged.music = Object.assign(structuredClone(DEFAULTS.music), merged.music || {});
   if (!Array.isArray(merged.music.formats) || !merged.music.formats.length) merged.music.formats = ["m4a"];
   return merged;
@@ -786,6 +792,25 @@ function sceneCards(group) {
       <div class="bar"><button class="btn small ghost" data-act="up">↑</button><button class="btn small ghost" data-act="down">↓</button><button class="btn small ghost" data-act="dup">Duplicate</button><button class="btn small ghost" data-act="del">Delete</button></div></div>`;
   }).join("");
 }
+function updateFrameParallel() {
+  const wrap = $("#f_parallelWrap"), cb = $("#f_parallel"), note = $("#f_parallelNote");
+  if (!wrap || !cb || !note) return;
+  if (S.frames.engine === "agent") { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const ready = S.frames.scenes.filter((s) => s.prompt.trim());
+  const hasDep = ready.some((sc, i) => i > 0 && (sc.match || sc.chain));
+  if (hasDep) {
+    cb.disabled = true; cb.checked = false;
+    note.textContent = 'Disabled while "Match previous frame" is on — frames that depend on the previous frame cannot be sent together.';
+  } else if (ready.length < 2) {
+    cb.disabled = true; cb.checked = false;
+    note.textContent = "Add at least 2 frames with prompts to send independent stills back to back instead of one at a time (three stills took 96 s instead of about 4 minutes).";
+  } else {
+    cb.disabled = false; cb.checked = Boolean(S.frames.parallel);
+    note.textContent = "For stills that do not depend on each other: sends them back to back instead of one at a time (three stills took 96 s instead of about 4 minutes).";
+  }
+}
+$("#f_parallel").addEventListener("change", () => { S.frames.parallel = $("#f_parallel").checked; save(); });
 function renderScenes() {
   $("#f_scenes").innerHTML = sceneCards("frames");
   $("#s_scenes").innerHTML = sceneCards("shots");
@@ -794,6 +819,7 @@ function renderScenes() {
   $("#f_engineNote").textContent = S.frames.engine === "agent"
     ? "Flow's agent renders every frame at once (about a minute for 30) and rewrites each prompt itself. No references, no frame matching."
     : "Each frame runs on its own with your exact prompt, references and matching — about a minute each.";
+  updateFrameParallel();
 }
 document.addEventListener("input", (e) => {
   const k = e.target.dataset.k; if (!k) return;
@@ -1407,6 +1433,7 @@ function estimate() {
     $("#estNum").textContent = "0 credits";
     $("#estSub").textContent = `${ready} frame(s) ready · images are free`;
     btn.disabled = busy || !ready;
+    updateFrameParallel();
   } else if (tab === "shots") {
     const ready = S.shots.scenes.filter((s) => s.prompt.trim());
     const total = ready.reduce((n, s) => n + sceneCost(s), 0);
@@ -1444,7 +1471,8 @@ $("#roll").onclick = async () => {
   }));
   const cost = video ? list.reduce((n, s) => n + sceneCost(s), 0) : 0;
   if (cost > 0 && !confirm(`Queue ${scenes.length} shot(s) for about ${cost} credits?`)) return;
-  try { await api("generate", { project: cfg.project, scenes }); toast(video ? "Rolling." : "Rendering frames."); poll(); } catch (err) { toast(err.message, true); }
+  const parallel = !video && S.frames.parallel && scenes.length >= 2 && !scenes.some((s) => s.reference_previous || s.chain_previous);
+  try { await api("generate", { project: cfg.project, scenes, ...(parallel ? { parallel_images: true } : {}) }); toast(video ? "Rolling." : "Rendering frames."); poll(); } catch (err) { toast(err.message, true); }
 };
 
 /* ---------- monitor + gallery ---------- */
