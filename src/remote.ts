@@ -29,6 +29,7 @@ export class RemoteCore implements Core {
   projects = (a: unknown) => call("projects", a ?? {});
   new_project = (a: unknown) => call("new_project", a);
   open_project = (a: unknown) => call("open_project", a);
+  rename_project = (a: unknown) => call("rename_project", a);
   character = (a: unknown) => call("character", a);
   characters = (a: unknown) => call("characters", a ?? {});
   accounts = (a: unknown) => call("accounts", a ?? {});

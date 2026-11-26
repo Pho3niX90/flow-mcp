@@ -8,6 +8,7 @@ import { FREE_UPSCALE, SYSTEM_DOWNLOADS, SettledFiles, newDownloads, snapshotDow
 import type { Job } from "./queue.js";
 import { buildCollectionTree, findCollection, parentPath, refOf, splitLibraryRef, type FlowCollection } from "./library.js";
 import { matchScenes, matchSent } from "./match.js";
+import { isProjectGridUrl, validateProjectTitle } from "./paths.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
 import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseVoiceFromSnapshot } from "./tiles.js";
 import { trace } from "./trace.js";
@@ -3360,10 +3361,41 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   return files;
 }
 
+// Sets the title of the open Flow project via the project grid's "Editable text" textbox.
+// Because an item's detail page also exposes a textbox named "Editable text", this refuses to run unless the page's
+// path is strictly `/project/<uuid>`. Returns the title read back from Flow after submitting.
+async function setProjectTitle(page: Page, rawTitle: string): Promise<string> {
+  const title = validateProjectTitle(rawTitle);
+  if (!isProjectGridUrl(page.url())) {
+    throw new Error(`Not on the project grid (${page.url()}). Refusing to rename so an item's title is not overwritten.`);
+  }
+  const name = page.getByRole("textbox", { name: "Editable text" }).first();
+  trace("project title: waiting for textbox");
+  await name.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
+    throw new Error('Flow\'s project title box ("Editable text") did not appear on the project grid.');
+  });
+  await name.fill(title, { timeout: 5000 });
+  await name.press("Enter", { timeout: 5000 });
+  trace("project title: submitted");
+  let shown = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.waitForTimeout(800);
+    shown = (await name.inputValue({ timeout: 2000 }).catch(() => "")).trim();
+    if (shown === title) break;
+  }
+  if (shown !== title) {
+    const stateTitle = await getFlowState().then((s) => s.project?.trim() ?? "", () => "");
+    if (stateTitle) shown = stateTitle;
+  }
+  trace(`project title: confirmed "${shown}"`);
+  return shown;
+}
+
 // A fresh Flow project, so a film can start from scratch without anyone clicking. Mapped live (2026-10-30): Flow's home
 // page has one button "New project", which opens /project/<uuid>; on the project page the name is a text box whose
 // accessible name is "Editable text" (it holds Flow's default name, e.g. "Oct 29 - 22:17").
 export async function createProject(title?: string): Promise<{ id: string; url: string; title: string }> {
+  const cleanTitle = title !== undefined && title.trim() !== "" ? validateProjectTitle(title) : undefined;
   const page = await getFlowPage();
   await page.goto(inEnglish("https://flow.google.com/"), { waitUntil: "domcontentloaded" });
   const button = page.getByRole("button", { name: /new project/i }).first();
@@ -3375,13 +3407,35 @@ export async function createProject(title?: string): Promise<{ id: string; url: 
     throw new Error("Pressed \"New project\" but Flow did not open a project within 30 s.");
   });
   const id = page.url().match(/\/project\/([0-9a-f-]{36})/)![1];
-  const name = page.getByRole("textbox", { name: "Editable text" }).first();
-  await name.waitFor({ state: "visible", timeout: 15_000 }).catch(() => undefined);
-  if (title?.trim()) {
-    await name.fill(title.trim()).catch(() => undefined);
-    await name.press("Enter").catch(() => undefined);
-    await page.waitForTimeout(1200);
+  let shown = "";
+  if (cleanTitle) {
+    shown = await setProjectTitle(page, cleanTitle).catch(() => "");
+  } else {
+    const name = page.getByRole("textbox", { name: "Editable text" }).first();
+    await name.waitFor({ state: "visible", timeout: 15_000 }).catch(() => undefined);
+    shown = (await name.inputValue({ timeout: 2000 }).catch(() => "")).trim();
   }
-  const shown = (await name.inputValue().catch(() => "")) || title || "";
-  return { id, url: `https://flow.google.com/project/${id}`, title: shown };
+  return { id, url: `https://flow.google.com/project/${id}`, title: shown || cleanTitle || "" };
+}
+
+// Renames the currently open Flow project from the project grid. Refuses unless the page is strictly on `/project/<uuid>`
+// so the item page's textbox of the same name ("Editable text") can never be edited by mistake.
+export async function renameProject(title: string): Promise<{ renamed: string; to: string }> {
+  const clean = validateProjectTitle(title);
+  const state = await getFlowState();
+  if (!state.signedIn || !state.inProject) throw new Error(state.hint);
+  const page = await getFlowPage();
+  await ensureProjectGrid(page);
+  trace("rename project: grid ready");
+  if (!isProjectGridUrl(page.url())) {
+    throw new Error(`Not on the project grid (${page.url()}). Refusing to rename so an item's title is not overwritten.`);
+  }
+  const box = page.getByRole("textbox", { name: "Editable text" }).first();
+  const before = (await box.inputValue({ timeout: 2000 }).catch(() => "")).trim() || state.project?.trim() || "";
+  if (before === clean) return { renamed: before, to: clean };
+  const shown = await setProjectTitle(page, clean);
+  if (shown !== clean) {
+    throw new Error(`Flow did not keep the new project title "${clean}" (still showing "${shown || "unknown"}").`);
+  }
+  return { renamed: before || "(untitled)", to: shown };
 }

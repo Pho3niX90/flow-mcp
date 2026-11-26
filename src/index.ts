@@ -298,6 +298,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "flow_rename_project",
+  {
+    title: "Rename the open Flow project",
+    description:
+      "Rename the currently open Google Flow project from the project grid (1 to 100 characters, single line) and confirm Flow kept the new title. Free.",
+    inputSchema: shapes.rename_project,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  (args) => reply(patient("flow_rename_project", core.rename_project(args))),
+);
+
+server.registerTool(
   "flow_characters",
   {
     title: "List characters",

@@ -265,7 +265,9 @@ so scene numbers stay right regardless of finish order. Video scenes always stay
 | `flow_accounts` | Manage Google Flow accounts (`list`, `add`, `enable`, `disable`, `remove`) so several signed-in accounts can work in parallel |
 | `flow_image_models` | List Flow's available image models and optionally save a default image model (used when `model` is omitted on image generations) |
 | `flow_projects` | List the projects on your Flow home page (in a temporary tab so the open project is untouched) and mark which one is open |
+| `flow_new_project` | Create a new, empty Flow project and open it, optionally with a title |
 | `flow_open_project` | Open one of your existing Flow projects by name, UUID or URL; `flow_projects` and `flow_status` list the names |
+| `flow_rename_project` | Rename the currently open Flow project from the project grid and confirm Flow kept the new title |
 | `flow_generate` | Queue scenes: prompt, image or video, model, aspect, duration, resolution, variants, first/last frame, reference images, `max_credits` cap, optional `account` pin, and opt-in `parallel_images` for independent stills |
 | `flow_wait` | Wait for jobs, or for the task id of a slow call; returns file paths and results. Answers within about 40 s, so call again until `finished` is true |
 | `flow_cancel` | Cancel a job that has not started |

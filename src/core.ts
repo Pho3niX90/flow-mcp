@@ -8,7 +8,7 @@ import { KOKORO_DEFAULT_VOICE, KOKORO_MB, KOKORO_VOICES, kokoroReady, speakWithK
 import { extractFirstFrame, extractFrameAt, extractLastFrame } from "./chain.js";
 import { burnCaptions, captionedName, captionSetup, previewCaptions, transcribe } from "./captions.js";
 import { presenter } from "./presenter.js";
-import { characterLook, characterVoice, characterVoices, createCharacter, createProject, downloadAsset, downloadCollection, imageModelFor, LATEST_IMAGE_MODEL, listImageModels, listProjectsSummary, openProject, refOf, renameAsset, setCharacterVoice, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration, runImageBatch } from "./flow.js";
+import { characterLook, characterVoice, characterVoices, createCharacter, createProject, downloadAsset, downloadCollection, imageModelFor, LATEST_IMAGE_MODEL, listImageModels, listProjectsSummary, openProject, refOf, renameAsset, renameProject, setCharacterVoice, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration, runImageBatch } from "./flow.js";
 import { accountByName, addAccount, defaultAccount, defaultImageModel, enabledAccounts, listAccounts, loadSettings, onAccount, profileDir, saveSettings, setAccountEnabled } from "./accounts.js";
 import { getFlowPage } from "./chrome.js";
 import { differenceMatte } from "./matte.js";
@@ -500,6 +500,10 @@ export const shapes = {
     project: z.string().min(1).describe("Project name as Flow shows it, or its uuid/URL. flow_projects and flow_status list the names."),
     account: accountField,
   },
+  rename_project: {
+    title: z.string().trim().min(1).max(100).describe("New title for the currently open Flow project (1 to 100 characters, single line)."),
+    account: accountField,
+  },
   character: {
     name: z.string().min(1).max(60).describe("Character name; scenes then reference it as 'asset:<name>' in reference_images."),
     describe: z
@@ -563,6 +567,7 @@ export interface Core {
   projects(a: Args<"projects">): Promise<unknown>;
   new_project(a: Args<"new_project">): Promise<unknown>;
   open_project(a: Args<"open_project">): Promise<unknown>;
+  rename_project(a: Args<"rename_project">): Promise<unknown>;
   character(a: Args<"character">): Promise<unknown>;
   characters(a: Args<"characters">): Promise<unknown>;
   accounts(a: Args<"accounts">): Promise<unknown>;
@@ -1047,6 +1052,10 @@ export class LocalCore implements Core {
 
   async open_project({ project, account }: Args<"open_project">) {
     return this.direct(account, () => openProject(project));
+  }
+
+  async rename_project({ title, account }: Args<"rename_project">) {
+    return this.direct(account, () => renameProject(title));
   }
 
   // A copy of a character must sound like the original. The remembered voice is used when there is one, otherwise it is
