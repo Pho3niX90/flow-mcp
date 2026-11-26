@@ -580,7 +580,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
       });
       const fixed = output.replace(/\.mp4$/, "") + "-ghosts.mp4";
       try {
-        await run(FFMPEG, ["-y", "-v", "error", "-i", output, "-vf", steps.join(","), "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", fixed], { maxBuffer: 32 * 1024 * 1024 });
+        await run(FFMPEG, ["-y", "-v", "error", "-i", output, "-vf", steps.join(","), "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "copy", "-movflags", "+faststart", fixed], { maxBuffer: 32 * 1024 * 1024 });
         renameSync(fixed, output);
       } finally {
         rmSync(dir, { recursive: true, force: true });
