@@ -206,6 +206,50 @@ Chrome tab and the job queue; the other talks to it over a local API, so Claude 
 agree on what is running. That API listens on 127.0.0.1 only and needs a per-run token
 (`~/.flow-mcp/token`).
 
+### Background service
+
+If you want the control panel running without keeping a terminal window open, use `flow-studio`
+(after `npm run build`; run it via `npm run flow-studio -- <command>` or install the bin with `npm link`):
+
+```bash
+npm run flow-studio -- start --open   # start in the background and open the panel
+npm run flow-studio -- status         # show URL, process id, Chrome window, and paths (--json supported)
+npm run flow-studio -- stop           # stop the background service and close Flow Studio's Chrome window
+```
+
+- `stop` refuses to interrupt an active generation unless you pass `--force`, refuses to stop a server
+  owned by your AI assistant, and only closes Chrome windows that Flow Studio itself launched
+  (pass `--keep-chrome` to leave Chrome open).
+- Settings live in `~/.flow-mcp/config.json` (`port`, `cdpPort`, `output`, `chrome`), the running
+  owner is recorded in `~/.flow-mcp/studio.json`, and background logs go to `~/.flow-mcp/logs/studio.log`
+  (rotated at 5 MB, keeping one backup). Environment variables still override `config.json`.
+- If the configured panel or Chrome port is already held by another unrelated program, Flow Studio
+  picks the next free port automatically and records it so `status`, `stop`, and MCP clients find it.
+
+### Several accounts at once
+
+With one Google account, everything stays in `~/.flow-mcp/` with no extra setup. If you have more than
+one Google account and want Flow MCP to share batches across them in parallel, add extra accounts:
+
+```bash
+npm run login -- backup    # opens a separate Chrome window for "backup"; sign in and open a Flow project
+```
+
+Or ask your assistant to use `flow_accounts` (`add`, `list`, `enable`, `disable`, `remove`). Each
+additional account keeps its own Chrome profile, port, downloads, and memory under
+`~/.flow-mcp/accounts/<name>/`, while the default `main` account stays in `~/.flow-mcp/`. Ready,
+enabled accounts automatically share unpinned scenes from the queue in parallel (one active job per
+account, respecting each account's pacing).
+
+### Parallel image batches
+
+By default `flow_generate` runs one scene at a time. When generating several independent stills
+(`kind: "image"` with no `chain_previous` / `first_frame` / `last_frame`), you can pass
+`parallel_images: true` on `flow_generate` to submit up to 6 stills per account at a time (10–20 s
+apart inside Flow's composer, reading each scene's credit quote before sending) and wait for all of
+them together. Each finished image is matched back to its scene by its prompt and attached references
+so scene numbers stay right regardless of finish order. Video scenes always stay serial.
+
 ---
 
 ## Tools
@@ -213,9 +257,11 @@ agree on what is running. That API listens on 127.0.0.1 only and needs a per-run
 | Tool | Purpose |
 |---|---|
 | `flow_status` | Session state (signed in, which project is open, plan, credits left), queue, pacing, prompt playbook |
+| `flow_accounts` | Manage Google Flow accounts (`list`, `add`, `enable`, `disable`, `remove`) so several signed-in accounts can work in parallel |
+| `flow_image_models` | List Flow's available image models and optionally save a default image model (used when `model` is omitted on image generations) |
 | `flow_projects` | List the projects on your Flow home page (in a temporary tab so the open project is untouched) and mark which one is open |
 | `flow_open_project` | Open one of your existing Flow projects by name, UUID or URL; `flow_projects` and `flow_status` list the names |
-| `flow_generate` | Queue scenes: prompt, image or video, model, aspect, duration, resolution, variants, first/last frame, reference images, `max_credits` cap |
+| `flow_generate` | Queue scenes: prompt, image or video, model, aspect, duration, resolution, variants, first/last frame, reference images, `max_credits` cap, optional `account` pin, and opt-in `parallel_images` for independent stills |
 | `flow_wait` | Wait for jobs, or for the task id of a slow call; returns file paths and results. Answers within about 40 s, so call again until `finished` is true |
 | `flow_cancel` | Cancel a job that has not started |
 | `flow_retry` | Re-queue failed jobs with the same settings and file names (a failed tile is first retried inside Flow with its own free Retry button: `retries`, default 1) |
@@ -269,10 +315,11 @@ key → Save key**. It's checked with Google before it's saved, and stored only 
 - Any Google account language works. The server finds Flow's buttons by their English names, so its
   Chrome window always shows Flow in English (it adds `?hl=en` to the address). Your account's own
   language setting is never changed, and prompts can be written in any language.
-- Environment variables: `GEMINI_API_KEY`, `FLOW_MCP_PORT` (8787), `FLOW_MCP_OUTPUT`,
-  `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PAUSE_MIN_S`,
-  `FLOW_MCP_PAUSE_MAX_S`. Helper programs, if they are not on your PATH: `FLOW_MCP_FFMPEG`,
-  `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
+- Settings file: `~/.flow-mcp/config.json` (`port`, `cdpPort`, `output`, `chrome`), created on first
+  `flow-studio start`. Environment variables override it: `GEMINI_API_KEY`, `FLOW_MCP_PORT` (8787),
+  `FLOW_MCP_OUTPUT`, `FLOW_MCP_HOME`, `FLOW_MCP_CDP_PORT` (9333), `FLOW_MCP_CHROME`, `FLOW_MCP_PROJECT`,
+  `FLOW_MCP_PAUSE_MIN_S`, `FLOW_MCP_PAUSE_MAX_S`. Helper programs, if they are not on your PATH:
+  `FLOW_MCP_FFMPEG`, `FLOW_MCP_FFPROBE`, `FLOW_MCP_WHISPER`.
 
 ## If something goes wrong
 
