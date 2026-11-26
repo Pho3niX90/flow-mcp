@@ -30,6 +30,8 @@ const SESSION_URL = `${MUSIC_URL}session`;
 const LIBRARY_URL = `${MUSIC_URL}library/my-songs`;
 const SONG_TIMEOUT_MS = 6 * 60_000;
 const DOWNLOAD_TIMEOUT_MS = 90_000;
+// The library loads this many songs at a time.
+const LIBRARY_PAGE = 20;
 
 export const MUSIC_SIGNIN_HINT =
   "Not signed in to Flow Music. Run `npm run login -- --music` and sign in with Google in the Flow Music window.";
@@ -68,10 +70,24 @@ async function probeSignedIn(page: Page, waitMs = 4000): Promise<boolean> {
   return classifyMusicSignedIn({ logInVisible, signedInNavVisible }) === true;
 }
 
+// The first answer to a matching request whose body can actually be read as JSON, or null after the time limit.
+// "The first matching response" is not enough: around a reload the page sends some requests twice, and the body of the
+// one that was cut off by the reload cannot be read, so taking that one gave no balance at all (seen live 2026-11-26).
 function waitJsonResponse(page: Page, urlTest: (url: string) => boolean, timeoutMs: number): Promise<unknown> {
-  return page
-    .waitForResponse((res) => urlTest(res.url()) && res.ok(), { timeout: timeoutMs })
-    .then((res) => res.json().catch(() => null), () => null);
+  return new Promise((resolve) => {
+    const done = (value: unknown) => {
+      clearTimeout(timer);
+      page.off("response", onResponse);
+      resolve(value);
+    };
+    const onResponse = async (res: Response) => {
+      if (!urlTest(res.url()) || !res.ok()) return;
+      const body: unknown = await res.json().catch(() => null);
+      if (body !== null && typeof body === "object") done(body);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    page.on("response", onResponse);
+  });
 }
 
 // Flow Music's /__api/billing/* endpoints require the page's own auth headers, so we never call them ourselves: we
@@ -286,6 +302,31 @@ function menuOption(page: Page, exactName: string): Locator {
     .first();
 }
 
+// Presses a menu item with a plain click at its centre. Playwright's own click first scrolls the item "into view if
+// needed", and any scroll makes this page close its menus: in the library the format item was closed under the click
+// and the download failed with "<html> intercepts pointer events" (seen live 2026-11-26). An item that is not inside
+// the window is refused instead of scrolled to.
+async function pressMenuItem(page: Page, item: Locator, what: string): Promise<void> {
+  await item.waitFor({ state: "visible", timeout: 5000 }).catch(() => {
+    throw new Error(`${what} did not appear in Flow Music's menu.`);
+  });
+  // The menu slides and grows into place. Its place is only known once it has stopped moving: a click aimed at where
+  // the item was mid-way lands beside it, and nothing is downloaded.
+  let box = await item.boundingBox({ timeout: 2000 }).catch(() => null);
+  for (let i = 0; i < 20; i++) {
+    await pause(page, 120);
+    const now = await item.boundingBox({ timeout: 2000 }).catch(() => null);
+    const still = box && now && Math.abs(box.x - now.x) < 0.5 && Math.abs(box.y - now.y) < 0.5 && Math.abs(box.width - now.width) < 0.5 && Math.abs(box.height - now.height) < 0.5;
+    box = now;
+    if (still) break;
+  }
+  const vp = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })).catch(() => null);
+  if (!box || !vp || box.x < 0 || box.y < 0 || box.x + box.width > vp.width || box.y + box.height > vp.height) {
+    throw new Error(`${what} is in Flow Music's menu but outside the window, so it was not pressed. Make the Flow Music window larger and try again.`);
+  }
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
 async function closeMenus(page: Page): Promise<void> {
   await page.keyboard.press("Escape").catch(() => {});
   await pause(page, 200);
@@ -306,16 +347,8 @@ async function downloadSongOnPage(page: Page, clipId: string, outputStem: string
       try {
         const more = await moreOptionsButtonForClip(page, clipId);
         await more.click({ timeout: 5000 });
-        const dl = menuOption(page, "Download");
-        await dl.waitFor({ state: "visible", timeout: 5000 }).catch(() => {
-          throw new Error(`"Download" did not appear in the options menu for song "${clipId}".`);
-        });
-        await dl.click({ timeout: 5000 });
-        const fmtBtn = menuOption(page, label);
-        await fmtBtn.waitFor({ state: "visible", timeout: 5000 }).catch(() => {
-          throw new Error(`Format "${label}" did not appear in Flow Music's Download menu for song "${clipId}".`);
-        });
-        await fmtBtn.click({ timeout: 5000 });
+        await pressMenuItem(page, menuOption(page, "Download"), `"Download" for song "${clipId}"`);
+        await pressMenuItem(page, menuOption(page, label), `Format "${label}" for song "${clipId}"`);
         const arrived = await waitForDownloadedFile(page, before, DOWNLOAD_TIMEOUT_MS, "music");
         const actualExt = extensionOf(arrived);
         if (actualExt !== expectedExt) {
@@ -356,10 +389,15 @@ async function scrollLibraryForMore(page: Page): Promise<boolean> {
 async function openLibraryAndReadClips(page: Page, limit: number): Promise<MusicClip[]> {
   const byId = new Map<string, MusicClip>();
   let firstBatchDone = false;
+  // How many songs the newest answer held. Fewer than a full page of 20 means there is no further page, so nothing
+  // is scrolled: the scroll cost five seconds each time and left the page somewhere else.
+  let lastBatch = 0;
   const onResponse = async (res: Response) => {
     if (!res.url().includes("/__api/clips/auth-user") || !res.ok()) return;
     const body = await res.json().catch(() => null);
-    for (const clip of parseMusicClipsResponse(body)) {
+    const batch = parseMusicClipsResponse(body);
+    lastBatch = batch.length;
+    for (const clip of batch) {
       if (!byId.has(clip.id)) byId.set(clip.id, clip);
     }
     firstBatchDone = true;
@@ -372,7 +410,7 @@ async function openLibraryAndReadClips(page: Page, limit: number): Promise<Music
     if (!(await probeSignedIn(page))) throw new Error(MUSIC_SIGNIN_HINT);
     for (let i = 0; i < 60 && !firstBatchDone; i++) await pause(page, 250);
     trace(`music library: loaded ${byId.size} clip(s)`);
-    while (byId.size < limit) {
+    while (byId.size < limit && lastBatch >= LIBRARY_PAGE) {
       const before = byId.size;
       const gotMore = await scrollLibraryForMore(page);
       await pause(page, 300);
