@@ -1149,6 +1149,25 @@ export async function downloadCollection(name: string, dir: string): Promise<str
   return out.files;
 }
 
+async function renameTileViaMenu(page: Page, tile: Locator, title: string): Promise<boolean> {
+  await hoverTile(page, tile);
+  const more = tile.getByRole("button", { name: "More options" });
+  if (!(await more.isVisible().catch(() => false))) return false;
+  await more.click();
+  const rename = page.getByRole("menuitem", { name: "Rename", exact: true });
+  if (!(await rename.waitFor({ state: "visible", timeout: 4000 }).then(() => true, () => false))) {
+    await page.keyboard.press("Escape").catch(() => {});
+    return false;
+  }
+  await rename.click();
+  await pause(page, 1200);
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type(title, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await pause(page, 1500);
+  return true;
+}
+
 // Flow titles clips itself and happily reuses a title: two takes of the same scene both came back as "Woman climbing
 // granite wall", which makes a clip impossible to identify by name and cost real time tonight. Renaming each finished
 // tile to our own scene name fixes it at the source - the user's suggestion, and the right one.
@@ -1167,6 +1186,17 @@ async function renameTile(page: Page, tile: Locator, title: string, guard = true
   try {
     await hoverTile(page, tile);
     await tile.click();
+    // Wait for navigation to the item's own /edit/ page BEFORE looking for "Editable text": the project grid itself
+    // has a textbox named "Editable text" for the project title (createProject uses it), so a race here would rename
+    // the entire Flow project instead of the tile.
+    const openedEdit = await page.waitForURL(/\/edit\//, { timeout: 15_000 }).then(() => true, () => false);
+    if (!openedEdit || !/\/edit\//.test(new URL(page.url()).pathname)) {
+      // Never touch "Editable text" off /edit/. If we are still on the project grid with the same tile mounted, fall
+      // back to that tile's own More options -> Rename menu.
+      const onGrid = /^\/project\/[0-9a-f-]{36}\/?$/.test(new URL(page.url()).pathname);
+      if (onGrid && (await tile.count().catch(() => 0)) > 0) return await renameTileViaMenu(page, tile, title);
+      return false;
+    }
     const box = page.getByRole("textbox", { name: "Editable text" });
     await box.waitFor({ state: "visible", timeout: 8000 });
     await box.click();
