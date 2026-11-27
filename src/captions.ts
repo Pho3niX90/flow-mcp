@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
@@ -20,25 +20,59 @@ const WHISPER = process.env.FLOW_MCP_WHISPER ?? "whisper-cli";
 // Transcripts and preview stills; the panel is allowed to show pictures from here.
 export const CACHE_DIR = join(HOME_DIR, "captions");
 const MODEL_DIR = join(HOME_DIR, "models");
-// Speech models fetched the first time they are needed, from whisper.cpp's own collection on Hugging Face
+// Speech models fetched the first time they are needed, pinned to specific Hugging Face commits and verified by SHA-256
 // (FLOW_MCP_MODEL_BASE points at a mirror folder holding the same files). The sizes are what the panel tells the user.
 const SPEECH_MODELS = {
   // English: base.en, an English-only model; those time words best (see PREFERENCE).
-  english: { file: "ggml-base.en.bin", mb: 148, purpose: "for English" },
+  english: {
+    file: "ggml-base.en.bin",
+    mb: 148,
+    purpose: "for English",
+    sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+  },
   // Every other language. Measured on Spanish, German, Japanese and Chinese lines (2026-10-13): large-v3-turbo heard
   // every Spanish and German word where small misheard several ("ni un solo" -> "guión solo", "listos" -> "vistos"),
   // placed words as well, and still runs at about ten times real time. q5_0 is its compressed form: the same words at
   // a third of the size.
-  other: { file: "ggml-large-v3-turbo-q5_0.bin", mb: 574, purpose: "for this language" },
+  other: {
+    file: "ggml-large-v3-turbo-q5_0.bin",
+    mb: 574,
+    purpose: "for this language",
+    sha256: "394221709cd5ad1f40c66e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+  },
   // Only names the spoken language, for "auto": right on all 8 test languages in 0.2 s, so an English speaker who never
   // picks a language is not sent the 574 MB model.
-  detect: { file: "ggml-base-q5_1.bin", mb: 60, purpose: "that recognises the language" },
+  detect: {
+    file: "ggml-base-q5_1.bin",
+    mb: 60,
+    purpose: "that recognises the language",
+    sha256: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+  },
   // Silero voice-activity detection (0.9 MB): finds where people actually speak, so each stretch can be heard on its
   // own (see speechSpans). Lives in ggml-org's own collection, not whisper.cpp's.
-  vad: { file: "ggml-silero-v5.1.2.bin", mb: 0.8, purpose: "that finds where the speech is", base: "https://huggingface.co/ggml-org/whisper-vad/resolve/main" },
+  vad: {
+    file: "ggml-silero-v5.1.2.bin",
+    mb: 0.8,
+    purpose: "that finds where the speech is",
+    base: "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+    sha256: "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+  },
 } as const;
 type SpeechModel = keyof typeof SPEECH_MODELS;
-const MODEL_BASE = (process.env.FLOW_MCP_MODEL_BASE ?? "https://huggingface.co/ggerganov/whisper.cpp/resolve/main").replace(/\/+$/, "");
+const MODEL_BASE = (
+  process.env.FLOW_MCP_MODEL_BASE ?? "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1"
+).replace(/\/+$/, "");
+
+// Streams a file through SHA-256 and returns true only when its hex digest matches `expected`.
+export function verifyFileSha256(file: string, expected: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(file);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex").toLowerCase() === expected.toLowerCase()));
+  });
+}
 const BIG = { maxBuffer: 64 * 1024 * 1024 };
 const THREADS = String(Math.max(2, Math.min(8, cpus().length - 1)));
 type RunError = NodeJS.ErrnoException & { stderr?: string };
@@ -192,7 +226,7 @@ export async function captionSetup(): Promise<{
 // never mistaken for a model.
 const fetching = new Map<SpeechModel, Promise<string>>();
 function fetchModel(kind: SpeechModel): Promise<string> {
-  const { file, mb, purpose } = SPEECH_MODELS[kind];
+  const { file, mb, purpose, sha256 } = SPEECH_MODELS[kind];
   const pending = fetching.get(kind);
   if (pending) return pending;
   const job = (async () => {
@@ -204,13 +238,22 @@ function fetchModel(kind: SpeechModel): Promise<string> {
     // Claude's connector. curl ships with macOS and Windows 10+, follows the redirect to the download host, and can
     // only fail itself.
     const part = `${dest}.part`;
-    await run(systemTool("curl"), ["-L", "--fail", "--silent", "--show-error", "--connect-timeout", "20", "--retry", "2", "-o", part, `${process.env.FLOW_MCP_MODEL_BASE || !("base" in SPEECH_MODELS[kind]) ? MODEL_BASE : (SPEECH_MODELS[kind] as { base: string }).base}/${file}`], BIG).catch((err: RunError) => {
+    const url = `${process.env.FLOW_MCP_MODEL_BASE || !("base" in SPEECH_MODELS[kind]) ? MODEL_BASE : (SPEECH_MODELS[kind] as { base: string }).base}/${file}`;
+    await run(
+      systemTool("curl"),
+      ["-L", "--proto", "=https", "--proto-redir", "=https", "--fail", "--silent", "--show-error", "--connect-timeout", "20", "--max-time", "3600", "--retry", "2", "-o", part, "--", url],
+      BIG,
+    ).catch((err: RunError) => {
       rmSync(part, { force: true });
       throw new Error(err.code === "ENOENT" ? "curl is not installed" : String(err.stderr || err.message).trim().split("\n").at(-1));
     });
     if (statSync(part).size < mb * 0.9e6) {
       rmSync(part, { force: true });
       throw new Error("it arrived incomplete");
+    }
+    if (!(await verifyFileSha256(part, sha256))) {
+      rmSync(part, { force: true });
+      throw new Error("it did not match the expected file");
     }
     renameSync(part, dest);
     return dest;
