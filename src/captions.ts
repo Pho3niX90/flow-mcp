@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 import { chromeExecutable, HOME_DIR } from "./chrome.js";
-import { FFMPEG_HINT, IS_MAC, IS_WIN, ffmpeg, ffprobe, workDir } from "./platform.js";
+import { FFMPEG_HINT, IS_MAC, IS_WIN, ffmpeg, ffprobe, systemTool, workDir } from "./platform.js";
 
 // Captions in the style short-form apps use, burned into the picture. The words and their timings come from
 // whisper.cpp on this computer; the lettering is drawn by headless Chrome and laid over the video by ffmpeg. Chrome
@@ -203,7 +203,7 @@ function fetchModel(kind: SpeechModel): Promise<string> {
     // Claude's connector. curl ships with macOS and Windows 10+, follows the redirect to the download host, and can
     // only fail itself.
     const part = `${dest}.part`;
-    await run("curl", ["-L", "--fail", "--silent", "--show-error", "--connect-timeout", "20", "--retry", "2", "-o", part, `${process.env.FLOW_MCP_MODEL_BASE || !("base" in SPEECH_MODELS[kind]) ? MODEL_BASE : (SPEECH_MODELS[kind] as { base: string }).base}/${file}`], BIG).catch((err: RunError) => {
+    await run(systemTool("curl"), ["-L", "--fail", "--silent", "--show-error", "--connect-timeout", "20", "--retry", "2", "-o", part, `${process.env.FLOW_MCP_MODEL_BASE || !("base" in SPEECH_MODELS[kind]) ? MODEL_BASE : (SPEECH_MODELS[kind] as { base: string }).base}/${file}`], BIG).catch((err: RunError) => {
       rmSync(part, { force: true });
       throw new Error(err.code === "ENOENT" ? "curl is not installed" : String(err.stderr || err.message).trim().split("\n").at(-1));
     });

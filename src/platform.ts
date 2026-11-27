@@ -48,6 +48,27 @@ function safeListDir(p: string): string[] {
   }
 }
 
+export interface SystemToolEnv {
+  isWin?: boolean;
+  systemRoot?: string;
+  exists?: (p: string) => boolean;
+}
+
+// Resolves Windows built-in tools (powershell.exe, tar, cmd, curl) to their fixed System32 path so a file with the
+// same name in the current working directory or an untrusted PATH entry cannot hijack them.
+export function systemTool(name: string, env: SystemToolEnv = {}): string {
+  const win = env.isWin ?? IS_WIN;
+  if (!win) return name;
+  const exists = env.exists ?? existsSync;
+  const root = env.systemRoot ?? process.env.SystemRoot ?? "C:\\Windows";
+  const lower = name.toLowerCase();
+  const candidate =
+    lower === "powershell" || lower === "powershell.exe"
+      ? join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      : join(root, "System32", lower.endsWith(".exe") ? name : `${name}.exe`);
+  return exists(candidate) ? candidate : name;
+}
+
 // A process started before ffmpeg was installed keeps its old PATH (Claude Desktop's flow-mcp lives for days), so a bare
 // "ffmpeg" fails with ENOENT even though winget just installed it. Look on PATH first, then in the places the installers
 // put it, and only then give back the bare name so the error message still carries FFMPEG_HINT.
@@ -58,8 +79,10 @@ export function findTool(name: string, env: ToolLookupEnv = {}): string {
   const listDir = env.listDir ?? safeListDir;
   const exe = win ? `${name}.exe` : name;
   const pathEnv = env.pathEnv ?? process.env.PATH ?? "";
+  const isAbsDir = (dir: string) => (win ? /^[a-zA-Z]:[\\/]|^\\\\/.test(dir) : dir.startsWith("/"));
   for (const dir of pathEnv.split(win ? ";" : ":")) {
-    if (dir && exists(join(dir, exe))) return join(dir, exe);
+    if (!dir || dir === "." || !isAbsDir(dir)) continue;
+    if (exists(join(dir, exe))) return join(dir, exe);
   }
   const roots: string[] = [];
   if (win) {
@@ -101,14 +124,16 @@ export function workDir(prefix: string): string {
   return mkdtempSync(join(TMP_ROOT, prefix));
 }
 
-// PowerShell single-quoted string: the only character that needs escaping is the quote itself.
-export const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
+// PowerShell single-quoted string: PowerShell treats both ASCII apostrophe and Unicode single quotes (U+2018-U+201B)
+// as string delimiters, so double all five.
+export const psQuote = (s: string) => `'${s.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
 
-export function powershell(script: string, timeout = 120_000): string {
-  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+export function powershell(script: string, timeout = 120_000, env?: NodeJS.ProcessEnv): string {
+  return execFileSync(systemTool("powershell.exe"), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
     encoding: "utf8",
     timeout,
     windowsHide: true,
+    ...(env ? { env } : {}),
   });
 }
 
@@ -117,6 +142,9 @@ export function powershell(script: string, timeout = 120_000): string {
 // reached the program as two: Chrome then used "C:\Users\Jane" as its profile and opened the rest as a web address.
 // Such an argument is wrapped in double quotes, which Windows reads back as one argument.
 export function startProcessCommand(file: string, args: string[]): string {
+  if (file.includes('"') || args.some((a) => a.includes('"'))) {
+    throw new Error('Cannot launch process: double-quote character (") is not allowed in path or arguments.');
+  }
   const whole = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
   return `Start-Process -FilePath ${psQuote(file)} -ArgumentList ${args.map((a) => psQuote(whole(a))).join(",")} -WindowStyle Normal`;
 }
@@ -181,7 +209,9 @@ export function moveToBin(target: string): string {
   if (IS_WIN) {
     const kind = statSync(target).isDirectory() ? "DeleteDirectory" : "DeleteFile";
     powershell(
-      `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${kind}(${psQuote(target)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`,
+      `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${kind}($env:FLOW_MCP_TARGET, 'OnlyErrorDialogs', 'SendToRecycleBin')`,
+      120_000,
+      { ...process.env, FLOW_MCP_TARGET: target },
     );
     return BIN;
   }
@@ -202,7 +232,7 @@ export function moveToBin(target: string): string {
 export function extractZip(zip: string, dest: string): string[] {
   mkdirSync(dest, { recursive: true });
   try {
-    execFileSync("tar", ["-xf", zip, "-C", dest], { stdio: "ignore" });
+    execFileSync(systemTool("tar"), ["-xf", zip, "-C", dest], { stdio: "ignore" });
   } catch {
     execFileSync("unzip", ["-o", "-q", zip, "-d", dest], { stdio: "ignore" });
   }
@@ -223,7 +253,7 @@ export function extractZip(zip: string, dest: string): string[] {
 export function openUrl(url: string): void {
   try {
     if (IS_MAC) execFileSync("open", [url], { stdio: "ignore" });
-    else if (IS_WIN) execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore", windowsHide: true });
+    else if (IS_WIN) execFileSync(systemTool("cmd"), ["/c", "start", "", url], { stdio: "ignore", windowsHide: true });
     else execFileSync("xdg-open", [url], { stdio: "ignore" });
   } catch {
     // Opening the browser is a convenience; the address is printed either way.

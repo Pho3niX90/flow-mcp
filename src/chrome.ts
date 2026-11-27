@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
 import { CONFIG, OUTPUT_ROOT } from "./config.js";
-import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand } from "./platform.js";
+import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand, systemTool } from "./platform.js";
 import { FLOW_URL, MUSIC_URL, isSiteUrl, pickSiteUrlIndex, type Site } from "./sites.js";
 import { trace } from "./trace.js";
 
@@ -207,7 +207,7 @@ async function launchChrome(a: Account): Promise<number> {
   // On Windows, MCP servers and background daemons are spawned hidden (SW_HIDE), which child GUI processes inherit
   // unless started with Normal style.
   if (process.platform === "win32") {
-    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", startProcessCommand(chromePath, args)], { stdio: "ignore", windowsHide: true });
+    execFileSync(systemTool("powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", startProcessCommand(chromePath, args)], { stdio: "ignore", windowsHide: true });
   } else {
     const child = spawn(chromePath, args, { detached: true, stdio: "ignore" });
     child.unref();

@@ -21,6 +21,10 @@ test("an argument with a space is wrapped so Windows passes it as one", () => {
   );
   // A quote inside a path cannot end the PowerShell string early.
   assert.match(startProcessCommand("C:\\it's\\chrome.exe", ["--x"]), /-FilePath 'C:\\it''s\\chrome\.exe'/);
+  assert.match(startProcessCommand("C:\\it\u2019s\\chrome.exe", ["--x"]), /-FilePath 'C:\\it\u2019\u2019s\\chrome\.exe'/);
+  // A double quote in path or arguments is refused so Start-Process cannot split arguments.
+  assert.throws(() => startProcessCommand('C:\\bad"path\\chrome.exe', ["--x"]), /double-quote/i);
+  assert.throws(() => startProcessCommand("C:\\chrome.exe", ['--user-data-dir=C:\\a"b']), /double-quote/i);
 });
 
 test("a program started that way really receives each argument whole", { skip: process.platform !== "win32" }, () => {
