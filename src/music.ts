@@ -28,6 +28,8 @@ import {
 } from "./music-parse.js";
 import { downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
 import { FFMPEG_HINT, ffmpeg, moveFile, workDir } from "./platform.js";
+import { isSiteUrl } from "./sites.js";
+import { cssAttrValue } from "./tiles.js";
 import { trace } from "./trace.js";
 
 const SESSION_URL = `${MUSIC_URL}session`;
@@ -101,8 +103,8 @@ function waitJsonResponse(page: Page, urlTest: (url: string) => boolean, timeout
 // listen to the page's own responses during a reload or navigation. Never call this while a music job is running.
 async function readBillingViaReload(page: Page): Promise<{ plan?: string; credits_remaining?: number; tokens_remaining?: number }> {
   trace("music: reading billing via reload");
-  const creditsP = waitJsonResponse(page, (u) => u.includes("/__api/billing/credits"), 12_000);
-  const subP = waitJsonResponse(page, (u) => u.includes("/__api/billing/subscription"), 12_000);
+  const creditsP = waitJsonResponse(page, (u) => isSiteUrl("music", u) && u.includes("/__api/billing/credits"), 12_000);
+  const subP = waitJsonResponse(page, (u) => isSiteUrl("music", u) && u.includes("/__api/billing/subscription"), 12_000);
   await page.reload({ waitUntil: "domcontentloaded" });
   await checkNotTranslated(page, "music");
   const [creditsBody, subBody] = await Promise.all([creditsP, subP]);
@@ -285,7 +287,7 @@ async function fallbackDetectFinishedSong(page: Page, beforeIds: Set<string>): P
 // walking up to the closest ancestor that contains exactly one "More options for ..." button, so another song's menu
 // can never be clicked by mistake.
 async function moreOptionsButtonForClip(page: Page, clipId: string): Promise<Locator> {
-  const link = page.locator(`a[href="/song/${clipId}"]`).first();
+  const link = page.locator(`a[href="/song/${cssAttrValue(clipId)}"]`).first();
   await link.waitFor({ state: "attached", timeout: 10_000 }).catch(() => {
     throw new Error(`Could not find song "${clipId}" (a[href="/song/${clipId}"]) on the Flow Music page.`);
   });
@@ -568,7 +570,7 @@ async function saveSongFormats(
 // GET /__api/clips/auth-user?offset=...; the first 20 never call this function.
 async function scrollLibraryForMore(page: Page): Promise<boolean> {
   trace("music library: scrolling for next page");
-  const nextBatchP = waitJsonResponse(page, (u) => u.includes("/__api/clips/auth-user"), 5000);
+  const nextBatchP = waitJsonResponse(page, (u) => isSiteUrl("music", u) && u.includes("/__api/clips/auth-user"), 5000);
   await page
     .evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
@@ -588,7 +590,8 @@ async function openLibraryAndReadClips(page: Page, limit: number): Promise<Music
   // is scrolled: the scroll cost five seconds each time and left the page somewhere else.
   let lastBatch = 0;
   const onResponse = async (res: Response) => {
-    if (!res.url().includes("/__api/clips/auth-user") || !res.ok()) return;
+    const url = res.url();
+    if (!isSiteUrl("music", url) || !url.includes("/__api/clips/auth-user") || !res.ok()) return;
     const body = await res.json().catch(() => null);
     const batch = parseMusicClipsResponse(body);
     lastBatch = batch.length;
@@ -648,8 +651,9 @@ export async function downloadMusicSongs(
   for (const [i, clip] of resolved.entries()) {
     // Only scroll the library to bring the clip's row into the DOM if a format has to fall back to the page menu.
     const ensureRow = async () => {
-      if ((await page.locator(`a[href="/song/${clip.id}"]`).count().catch(() => 0)) > 0) return;
-      for (let step = 0; step < 5 && (await page.locator(`a[href="/song/${clip.id}"]`).count().catch(() => 0)) === 0; step++) {
+      const songLink = `a[href="/song/${cssAttrValue(clip.id)}"]`;
+      if ((await page.locator(songLink).count().catch(() => 0)) > 0) return;
+      for (let step = 0; step < 5 && (await page.locator(songLink).count().catch(() => 0)) === 0; step++) {
         if (!(await scrollLibraryForMore(page))) break;
       }
     };
@@ -692,7 +696,7 @@ export async function generateMusicSong(
   const page = await getMusicPage();
   trace("music: opening new session");
   onProgress?.("opening Flow Music session");
-  const creditsBeforeP = waitJsonResponse(page, (u) => u.includes("/__api/billing/credits"), 10_000);
+  const creditsBeforeP = waitJsonResponse(page, (u) => isSiteUrl("music", u) && u.includes("/__api/billing/credits"), 10_000);
   await page.goto(SESSION_URL, { waitUntil: "domcontentloaded" });
   await checkNotTranslated(page, "music");
   if (!(await probeSignedIn(page))) throw new Error(MUSIC_SIGNIN_HINT);
@@ -755,7 +759,7 @@ export async function generateMusicSong(
 
   const onResponse = async (res: Response) => {
     const url = res.url();
-    if (!res.ok()) return;
+    if (!res.ok() || !isSiteUrl("music", url)) return;
     if (url.includes("/__api/audio-create-song-status/")) {
       const body = await res.json().catch(() => null);
       const status = classifyMusicStatus(body);

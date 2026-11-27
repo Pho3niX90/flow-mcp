@@ -51,7 +51,8 @@ export type MusicDownloadRoute =
   | { route: "convert"; url: string }
   | { route: "menu"; reason: "no_ffmpeg" | "no_url" | "untrusted_url" };
 
-// Allows only plain https: URLs on an allow-listed host (no credentials, no http:, no blob:/data:, no look-alike hosts).
+// Allows only plain https: URLs on an allow-listed host with the default port (no credentials, no custom port,
+// no http:, no blob:/data:, no look-alike hosts).
 export function isAllowedMusicMediaUrl(rawUrl: string | undefined, allowedHosts: readonly string[] = MUSIC_MEDIA_HOSTS): boolean {
   if (!rawUrl || typeof rawUrl !== "string") return false;
   let parsed: URL;
@@ -62,6 +63,7 @@ export function isAllowedMusicMediaUrl(rawUrl: string | undefined, allowedHosts:
   }
   if (parsed.protocol !== "https:") return false;
   if (parsed.username || parsed.password) return false;
+  if (parsed.port !== "") return false;
   const host = parsed.hostname.toLowerCase();
   return allowedHosts.some((h) => h.toLowerCase() === host);
 }

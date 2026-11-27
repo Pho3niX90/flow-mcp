@@ -334,3 +334,102 @@ test("JobQueue failQueuedLane stops remaining queued music jobs without disturbi
   assert.equal(s3.error, "a song cost more than its limit; nothing more was started");
   assert.equal(f1.status, "done");
 });
+
+test("JobQueue direct-call reservations block overlapping jobs and concurrent direct calls", async () => {
+  let releaseJob;
+  const jobGate = new Promise((r) => (releaseJob = r));
+  let jobStarted = false;
+  let queuedRanAfterDirect = false;
+
+  const queue = new JobQueue(
+    async (job) => {
+      if (job.params.file_stem === "j1") {
+        jobStarted = true;
+        await jobGate;
+      }
+      if (job.params.file_stem === "j2") {
+        queuedRanAfterDirect = true;
+      }
+      return [`${job.params.file_stem}.png`];
+    },
+    {
+      accounts: () => ["main"],
+      ready: async () => undefined,
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
+    },
+  );
+
+  // 1. Direct call is refused while a job runs on the same (account, lane), allowed on another lane.
+  const j1 = queue.add(baseParams("j1"));
+  await waitUntil(() => jobStarted);
+  assert.equal(queue.reserveDirect("main", "flow"), false);
+  assert.equal(queue.reserveDirect("main", "music"), true);
+  queue.releaseDirect("main", "music");
+  releaseJob();
+  await waitUntil(() => j1.status === "done");
+
+  // 2. While a direct call holds the lane, a second direct call is refused AND a queued job waits until release.
+  assert.equal(queue.reserveDirect("main", "flow"), true);
+  assert.equal(queue.busyOn("main", "flow"), true);
+  assert.equal(queue.reserveDirect("main", "flow"), false);
+
+  const j2 = queue.add(baseParams("j2"));
+  await sleep(60);
+  assert.equal(j2.status, "queued", "queued job must wait while direct call holds the lane");
+  assert.equal(queuedRanAfterDirect, false);
+
+  queue.releaseDirect("main", "flow");
+  await waitUntil(() => j2.status === "done");
+  assert.equal(queuedRanAfterDirect, true);
+});
+
+test("JobQueue prunes oldest finished jobs past maxFinishedJobs while keeping queued and running jobs", async () => {
+  let releaseBlocker;
+  const blockerGate = new Promise((r) => (releaseBlocker = r));
+  let blockerStarted = false;
+
+  const queue = new JobQueue(
+    async (job) => {
+      if (job.params.file_stem === "running-one") {
+        blockerStarted = true;
+        await blockerGate;
+      }
+      return [`${job.params.file_stem}.png`];
+    },
+    {
+      accounts: () => ["main"],
+      ready: async () => undefined,
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
+      maxFinishedJobs: 3,
+    },
+  );
+
+  const finished = [];
+  for (let i = 1; i <= 5; i++) {
+    finished.push(queue.add(baseParams(`done-${i}`)));
+  }
+  await waitUntil(() => finished.every((j) => j.status === "done"));
+
+  // Only the 3 newest finished jobs remain.
+  assert.equal(queue.list().length, 3);
+  assert.equal(queue.get(finished[0].id), undefined);
+  assert.equal(queue.get(finished[1].id), undefined);
+  assert.ok(queue.get(finished[2].id));
+  assert.ok(queue.get(finished[3].id));
+  assert.ok(queue.get(finished[4].id));
+
+  // Active (running + queued) jobs are never pruned even when finished count is at cap.
+  const running = queue.add(baseParams("running-one"));
+  const queued = queue.add(baseParams("queued-one"));
+  await waitUntil(() => blockerStarted);
+  assert.ok(queue.get(running.id));
+  assert.ok(queue.get(queued.id));
+
+  releaseBlocker();
+  await waitUntil(() => running.status === "done" && queued.status === "done");
+  assert.equal(queue.list().length, 3);
+  assert.ok(queue.get(running.id));
+  assert.ok(queue.get(queued.id));
+});

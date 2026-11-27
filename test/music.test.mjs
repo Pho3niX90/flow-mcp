@@ -197,6 +197,7 @@ test("isAllowedMusicMediaUrl permits only allow-listed https hosts and rejects l
     "https://evilstorage.googleapis.com/clips/abc.m4a",
     "https://example.com/clips/abc.m4a",
     "https://user:pass@storage.googleapis.com/clips/abc.m4a",
+    "https://storage.googleapis.com:8443/producer-app-public/clips/abc.m4a",
   ]) {
     assert.equal(isAllowedMusicMediaUrl(bad), false, `expected reject for ${String(bad)}`);
   }

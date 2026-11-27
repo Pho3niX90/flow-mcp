@@ -41,8 +41,12 @@ test("Chrome's numbered copies match the name it announced, other names do not",
 
 test("a file in the shared folder is taken only with proof it came from Flow", () => {
   const watch = { seen: new Set(), since: 1_000_000 };
-  // Recorded origin decides when there is one, whatever the name.
+  // Recorded origin alone decides when Chrome did not announce download names.
   assert.equal(isFlowDownload({ name: "x.jpeg", born: 1_000_500, origin: FROM_FLOW }, watch, []), true);
+  // When both recorded origin and announced names are present, BOTH must match.
+  assert.equal(isFlowDownload({ name: "x.jpeg", born: 1_000_500, origin: FROM_FLOW }, watch, ["x.jpeg"]), true);
+  assert.equal(isFlowDownload({ name: "x (1).jpeg", born: 1_000_500, origin: FROM_FLOW }, watch, ["x.jpeg"]), true);
+  assert.equal(isFlowDownload({ name: "other.jpeg", born: 1_000_500, origin: FROM_FLOW }, watch, ["x.jpeg"]), false);
   assert.equal(isFlowDownload({ name: "report.pdf", born: 1_000_500, origin: FROM_ELSEWHERE }, watch, ["report.pdf"]), false);
   // No record: only a name Chrome announced on Flow's page.
   assert.equal(isFlowDownload({ name: "holiday.mp4", born: 1_000_500 }, watch, []), false);

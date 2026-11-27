@@ -108,6 +108,7 @@ export async function speakWithGemini(text: string, voice: string, target: strin
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
     }),
+    signal: AbortSignal.timeout(120_000),
   });
   const body = (await res.json()) as { error?: { message?: string }; candidates?: { content?: { parts?: TtsPart[] } }[] };
   if (!res.ok) throw new Error(`Gemini TTS refused this take (${res.status}): ${body.error?.message ?? "no detail"}`);

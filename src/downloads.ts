@@ -80,8 +80,8 @@ export interface SharedFile {
 }
 
 // Whether a new file in the user's own Downloads folder is the one the site sent. It has to have been created after
-// the watch began, and then either the system says it came from one of `origins` or, where the system keeps no record,
-// Chrome announced a download of that name on that page.
+// the watch began. When the system recorded an origin, it must match `origins`, and if Chrome also announced download
+// names on that page, the filename must match one of them too. When no origin record exists, the announced name decides.
 export function isFlowDownload(
   file: SharedFile,
   watch: DownloadWatch,
@@ -90,7 +90,10 @@ export function isFlowDownload(
 ): boolean {
   // Two seconds of slack: file times are coarser than the clock on some disks.
   if (file.born < watch.since - 2000) return false;
-  if (file.origin !== undefined) return originIsFlow(file.origin, origins);
+  if (file.origin !== undefined) {
+    if (!originIsFlow(file.origin, origins)) return false;
+    return expectedNames.length > 0 ? expectedNames.some((name) => sameDownloadName(file.name, name)) : true;
+  }
   return expectedNames.some((name) => sameDownloadName(file.name, name));
 }
 

@@ -88,6 +88,8 @@ export interface QueueHooks {
   pauseMaxMs?: number;
   musicPauseMinMs?: number;
   musicPauseMaxMs?: number;
+  // Cap on retained finished jobs (done/failed/cancelled); queued and running jobs are never dropped.
+  maxFinishedJobs?: number;
 }
 
 // Flow is driven like a careful person would: one generation at a time PER (ACCOUNT, LANE), with a randomised pause
@@ -122,6 +124,8 @@ export class JobQueue {
   private workers = new Map<string, Worker>();
   // Jobs a worker has taken but not started yet (it is still in its pause): no other worker may take them.
   private claimed = new Set<string>();
+  // Accounts/lanes currently held by a direct (non-queued) call so queued jobs and concurrent direct calls stay out.
+  private directActive = new Set<string>();
 
   constructor(
     private runner: JobRunner,
@@ -130,6 +134,23 @@ export class JobQueue {
 
   private worker(account: string, lane: Lane): Worker | undefined {
     return this.workers.get(workerKey(account, lane));
+  }
+
+  private pruneFinished(): void {
+    const cap = this.hooks.maxFinishedJobs ?? 1000;
+    let finished = 0;
+    for (const job of this.jobs.values()) {
+      if (job.status === "done" || job.status === "failed" || job.status === "cancelled") finished++;
+    }
+    if (finished <= cap) return;
+    let drop = finished - cap;
+    for (const [id, job] of this.jobs) {
+      if (drop <= 0) break;
+      if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+        this.jobs.delete(id);
+        drop--;
+      }
+    }
   }
 
   add(params: SceneParams): Job {
@@ -152,9 +173,22 @@ export class JobQueue {
     return this.list().some((j) => j.status === "running");
   }
 
-  // Whether this account's window for `lane` is in the middle of a job: direct calls on that site must wait for it.
+  // Whether this account's window for `lane` is in the middle of a job or a direct call.
   busyOn(account: string, lane: Lane = "flow"): boolean {
+    if (this.directActive.has(workerKey(account, lane))) return true;
     return this.list().some((j) => j.status === "running" && j.account !== undefined && same(j.account, account) && laneOf(j) === lane);
+  }
+
+  // Reserves `(account, lane)` for a direct call. Fails when a job or another direct call already holds it.
+  reserveDirect(account: string, lane: Lane = "flow"): boolean {
+    if (this.busyOn(account, lane)) return false;
+    this.directActive.add(workerKey(account, lane));
+    return true;
+  }
+
+  // Releases a direct-call reservation and kicks any queued jobs that waited for the lane to clear.
+  releaseDirect(account: string, lane: Lane = "flow"): void {
+    if (this.directActive.delete(workerKey(account, lane))) this.kick();
   }
 
   get pausedReason(): string | null {
@@ -202,6 +236,7 @@ export class JobQueue {
     if (job && job.status === "queued") {
       job.status = "cancelled";
       job.finishedAt = new Date().toISOString();
+      this.pruneFinished();
       this.kick();
     }
     return job;
@@ -219,6 +254,7 @@ export class JobQueue {
       job.finishedAt = now;
       stopped++;
     }
+    if (stopped) this.pruneFinished();
     return stopped;
   }
 
@@ -265,6 +301,7 @@ export class JobQueue {
         job.status = "failed";
         job.error = why;
         job.finishedAt = new Date().toISOString();
+        this.pruneFinished();
       }
     }
   }
@@ -273,6 +310,7 @@ export class JobQueue {
   // (flow lane only), or one single job otherwise. An account that is not ready on this lane leaves unpinned work to
   // the others - unless none is ready on this lane, when the first account takes it and fails it with the reason.
   private nextBatch(w: Worker): Job[] {
+    if (this.directActive.has(workerKey(w.account, w.lane))) return [];
     const accounts = this.hooks.accounts();
     const anyReady = accounts.some((a) => !this.worker(a, w.lane)?.notReady);
     const takesUnpinned = !w.notReady || (!anyReady && accounts[0] === w.account);
@@ -295,6 +333,7 @@ export class JobQueue {
       other.error = 'Stopped because Flow reported "unusual activity" on the job before this. Resolve it in the Flow window, then use flow_retry.';
       other.finishedAt = new Date().toISOString();
     }
+    this.pruneFinished();
   }
 
   private async work(w: Worker): Promise<void> {
@@ -305,6 +344,7 @@ export class JobQueue {
     try {
       for (;;) {
         if (!this.hooks.accounts().some((a) => same(a, w.account))) return; // disabled meanwhile
+        if (this.directActive.has(workerKey(w.account, w.lane))) return; // releaseDirect() will kick() us again
         this.failStuck();
         // An account that was not ready is checked again now and then: the user may have signed it in since.
         if (w.notReady && Date.now() - w.notReady.at > RECHECK_MS) w.notReady = undefined;
@@ -329,6 +369,7 @@ export class JobQueue {
               w.pausedReason = null;
             }
           }
+          if (this.directActive.has(workerKey(w.account, w.lane))) return;
           live = batch.filter((j) => j.status === "queued");
           if (!live.length) continue; // cancelled during the pause
           for (const j of live) {
@@ -357,6 +398,7 @@ export class JobQueue {
             j.finishedAt = new Date().toISOString();
           }
           if (blockedError) this.handleUnusualActivity(w, blockedError);
+          this.pruneFinished();
           w.lastFinished = Date.now();
           this.kick();
           continue;
@@ -376,6 +418,7 @@ export class JobQueue {
           if (job.error.includes("unusual activity")) this.handleUnusualActivity(w, job.error);
         }
         job.finishedAt = new Date().toISOString();
+        this.pruneFinished();
         w.lastFinished = Date.now();
         this.kick(); // jobs that waited on this one may now be ready, on any account
       }

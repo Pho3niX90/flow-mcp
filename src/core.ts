@@ -797,7 +797,10 @@ export class LocalCore implements Core {
       );
       if (res.credits_spent !== undefined) job.credits = res.credits_spent;
       const summary = [res.clip.title, res.clip.seconds ? `${res.clip.seconds}s` : "", `id:${res.clip.id}`].filter(Boolean).join(" · ");
-      if (res.credits_spent !== undefined && res.credits_spent > job.params.max_credits) {
+      if (res.credits_spent === undefined) {
+        job.note = `Warning: could not confirm the credit cost for this song. Remaining queued music jobs were stopped. (${summary})`;
+        this.queue.failQueuedLane("music", "could not confirm the song's credit cost; nothing more was started");
+      } else if (res.credits_spent > job.params.max_credits) {
         job.note = `Warning: song cost ${res.credits_spent} credits, above max_credits=${job.params.max_credits}. Remaining queued music jobs were stopped. (${summary})`;
         this.queue.failQueuedLane("music", "a song cost more than its limit; nothing more was started");
       } else {
@@ -805,20 +808,27 @@ export class LocalCore implements Core {
       }
       return res.files;
     } catch (err) {
-      if (err instanceof MusicOutcomeUnknownError) job.outcome_unknown = true;
+      if (err instanceof MusicOutcomeUnknownError) {
+        job.outcome_unknown = true;
+        this.queue.failQueuedLane("music", "the previous song's outcome could not be confirmed; nothing more was started");
+      }
       throw err;
     }
   }
 
-  // Calls that drive one account's site window directly (not through the queue) run on the account asked for, or the
-  // first one, and wait for nothing: if that account's lane is in the middle of a job they say so instead.
-  private direct<T>(account: string | undefined, work: () => Promise<T>, lane: Lane = "flow"): Promise<T> {
+  // Calls that drive one account's site window directly (not through the queue) reserve that account's lane so
+  // neither a queued job nor a second direct call can drive the same tab concurrently.
+  private async direct<T>(account: string | undefined, work: () => Promise<T>, lane: Lane = "flow"): Promise<T> {
     const target = account ? accountByName(account) : defaultAccount();
-    if (this.queue.busyOn(target.name, lane)) {
+    if (!this.queue.reserveDirect(target.name, lane)) {
       const msg = lane === "music" ? "A song is generating in the Flow Music window. Wait for it to finish (flow_wait), then retry." : BUSY;
-      return Promise.reject(new Error(`${msg} (account "${target.name}")`));
+      throw new Error(`${msg} (account "${target.name}")`);
     }
-    return onAccount(target, work);
+    try {
+      return await onAccount(target, work);
+    } finally {
+      this.queue.releaseDirect(target.name, lane);
+    }
   }
 
   // Which account a queued job must run on: the one named, or - for work that uses media already in a Flow project
@@ -1155,7 +1165,7 @@ export class LocalCore implements Core {
     // while Flow carries on and charges for it. Re-running then spends twice, which is exactly what happened on
     // 2026-09-20. Flow's own grid is the only honest record, so ask it before starting another paid generation.
     if (!force) {
-      const recent = (await onAccount(account ?? defaultAccount(), () => listAssets())).slice(0, 6).filter((a) => a.kind === "video");
+      const recent = (await this.direct(account, () => listAssets())).slice(0, 6).filter((a) => a.kind === "video");
       const source = from_asset.toLowerCase();
       const echo = recent.find((a) => {
         const n = a.name.toLowerCase();
