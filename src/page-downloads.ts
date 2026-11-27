@@ -121,3 +121,20 @@ export function extensionOf(file: string): string {
   }
   return kindOfBytes(head.subarray(0, read));
 }
+
+// Checks a local file's magic bytes before uploading it to Flow, refusing unknown binaries (.bin) and archives (.zip)
+// so non-media local files (such as .env or private keys) cannot be uploaded by mistake or prompt injection.
+export function assertAllowedUploadFile(file: string): string {
+  let st;
+  try {
+    st = statSync(file);
+  } catch {
+    throw new Error(`File not found: ${file}`);
+  }
+  if (!st.isFile()) throw new Error(`File is not a regular file: ${file}`);
+  const ext = extensionOf(file);
+  if (ext === ".bin" || ext === ".zip") {
+    throw new Error(`Refusing to upload "${file}": it is not a recognised image, video, or audio file (${ext}).`);
+  }
+  return ext;
+}

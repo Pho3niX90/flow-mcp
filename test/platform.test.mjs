@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { ffmpeg, ffprobe, findTool, moveFile, psQuote, systemTool } from "../dist/platform.js";
+import { characterLook, characterVoice, rememberCharacter, rememberVoice } from "../dist/flow.js";
+import { assertAllowedUploadFile } from "../dist/page-downloads.js";
+import { ffmpeg, ffprobe, findTool, moveFile, psQuote, systemTool, walkExtractedFiles } from "../dist/platform.js";
 
 test("moveFile moves a file and preserves its contents", () => {
   const root = mkdtempSync(join(process.env.FLOW_MCP_TMP ?? tmpdir(), "flow-platform-test-"));
@@ -143,5 +145,87 @@ test("systemTool resolves Windows tools under System32 and returns bare name els
     assert.match(systemTool("cmd"), /System32[\\/]cmd\.exe$/i);
   } else {
     assert.equal(systemTool("tar"), "tar");
+  }
+});
+
+test("walkExtractedFiles keeps regular files inside dest and skips symlinks", () => {
+  const root = mkdtempSync(join(process.env.FLOW_MCP_TMP ?? tmpdir(), "flow-walk-test-"));
+  const dest = join(root, "extracted");
+  const outside = join(root, "outside.txt");
+  mkdirSync(join(dest, "sub"), { recursive: true });
+  try {
+    const keep1 = join(dest, "a.png");
+    const keep2 = join(dest, "sub", "b.mp4");
+    const hidden = join(dest, ".hidden");
+    writeFileSync(keep1, "img");
+    writeFileSync(keep2, "vid");
+    writeFileSync(hidden, "dot");
+    writeFileSync(outside, "secret");
+
+    let symlinkCreated = false;
+    try {
+      symlinkSync(outside, join(dest, "escape.png"));
+      symlinkCreated = true;
+    } catch (err) {
+      if (err.code !== "EPERM" && err.code !== "EACCES") throw err;
+    }
+
+    const found = walkExtractedFiles(dest);
+    assert.equal(found.length, 2);
+    assert.ok(found.some((p) => p.endsWith("a.png")));
+    assert.ok(found.some((p) => p.endsWith("b.mp4")));
+    if (symlinkCreated) {
+      assert.ok(!found.some((p) => p.endsWith("escape.png")), "symlink must be skipped");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assertAllowedUploadFile accepts recognised media bytes and refuses text, env, and zip files", () => {
+  const root = mkdtempSync(join(process.env.FLOW_MCP_TMP ?? tmpdir(), "flow-upload-gate-"));
+  try {
+    const png = join(root, "pic.png");
+    writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]));
+    const mp4 = join(root, "clip.mp4");
+    writeFileSync(mp4, Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]));
+    const mp3 = join(root, "song.mp3");
+    writeFileSync(mp3, Buffer.from([0x49, 0x44, 0x33, 0x03, 0, 0, 0, 0, 0, 0, 0, 0]));
+    const envFile = join(root, ".env");
+    writeFileSync(envFile, "API_KEY=secret\n");
+    const zip = join(root, "bundle.zip");
+    writeFileSync(zip, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0]));
+
+    assert.equal(assertAllowedUploadFile(png), ".png");
+    assert.equal(assertAllowedUploadFile(mp4), ".mp4");
+    assert.equal(assertAllowedUploadFile(mp3), ".mp3");
+    assert.throws(() => assertAllowedUploadFile(envFile), /Refusing to upload/i);
+    assert.throws(() => assertAllowedUploadFile(zip), /Refusing to upload/i);
+    assert.throws(() => assertAllowedUploadFile(root), /not a regular file/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("character look and voice stores reject prototype-pollution keys and ignore inherited properties", () => {
+  const root = mkdtempSync(join(process.env.FLOW_MCP_TMP ?? tmpdir(), "flow-char-store-"));
+  const looksPath = join(root, "characters.json");
+  const voicesPath = join(root, "voices.json");
+  try {
+    for (const bad of ["__proto__", "PROTOTYPE", "Constructor"]) {
+      assert.throws(() => rememberCharacter(bad, "tall", looksPath), /cannot be used as a character name/i);
+      assert.throws(() => rememberVoice(bad, "achird", voicesPath), /cannot be used as a character name/i);
+      assert.equal(characterLook(bad, looksPath), undefined);
+      assert.equal(characterVoice(bad, voicesPath), undefined);
+    }
+    assert.equal(characterLook("toString", looksPath), undefined);
+    assert.equal(characterVoice("valueOf", voicesPath), undefined);
+
+    rememberCharacter("Ines", "blue coat", looksPath);
+    rememberVoice("Ines", "aoede", voicesPath);
+    assert.equal(characterLook("ines", looksPath), "blue coat");
+    assert.equal(characterVoice("INES", voicesPath), "aoede");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

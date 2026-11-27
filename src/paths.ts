@@ -1,12 +1,39 @@
 import { resolve } from "node:path";
 
+// Windows reserved device names that cannot be used as file or folder basenames (even with an extension).
+export const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  "com1",
+  "com2",
+  "com3",
+  "com4",
+  "com5",
+  "com6",
+  "com7",
+  "com8",
+  "com9",
+  "lpt1",
+  "lpt2",
+  "lpt3",
+  "lpt4",
+  "lpt5",
+  "lpt6",
+  "lpt7",
+  "lpt8",
+  "lpt9",
+]);
+
 // The folder name a project's files are saved under: anything that is not a letter, digit, "_", "." or "-" becomes "_".
-// A name made only of dots is refused. "." and ".." passed through unchanged, so a project called ".." saved into the
-// folder above the films folder, and one called "." into the films folder itself.
+// Trailing dots are stripped (NTFS silently strips them), dot-only names are refused, and Windows reserved device names
+// are prefixed with "_" so a project like "CON" or "NUL.txt" stays a normal folder.
 export function projectFolderName(project: string): string {
-  const name = project.replace(/[^\w.-]+/g, "_");
+  const name = project.replace(/[^\w.-]+/g, "_").replace(/\.+$/, "");
   if (!name || /^\.+$/.test(name)) throw new Error(`"${project}" cannot be used as a project name: use letters or digits.`);
-  return name;
+  const base = name.split(".")[0].toLowerCase();
+  return WINDOWS_RESERVED_NAMES.has(base) ? `_${name}` : name;
 }
 
 // Where a project's files are saved: always a folder directly inside `root`.

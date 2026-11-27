@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import type { Locator, Page } from "playwright-core";
 import { accountDir, collectionsDir, currentAccount, defaultImageModel, looksFile, voicesFile } from "./accounts.js";
 import { AGENT_BUTTON_RE, AGENT_ONLY_COMPOSER_ERROR, AGENT_SWITCH_RE, classifyAgentToggleState, isAgentOnlyComposer } from "./agent-toggle.js";
@@ -8,7 +8,7 @@ import { FREE_UPSCALE } from "./downloads.js";
 import type { Job } from "./queue.js";
 import { buildCollectionTree, findCollection, parentPath, refOf, splitLibraryRef, type FlowCollection } from "./library.js";
 import { matchScenes, matchSent } from "./match.js";
-import { downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
+import { assertAllowedUploadFile, downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
 import { isProjectGridUrl, validateProjectTitle } from "./paths.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
 import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseCreditQuote, parseVoiceFromSnapshot } from "./tiles.js";
@@ -755,7 +755,7 @@ async function waitForUpload(page: Page, name: string, timeoutMs: number): Promi
 // "asset:<name>" refers to something already in the Flow project (image, video, character) and skips the upload.
 async function uploadAsset(page: Page, job: Job, file: string, label: string): Promise<string> {
   if (file.startsWith(ASSET_PREFIX)) return file.slice(ASSET_PREFIX.length).trim();
-  if (!existsSync(file)) throw new Error(`File not found: ${file}`);
+  assertAllowedUploadFile(file);
   const name = `fm-${job.id}-${label}${extname(file).toLowerCase()}`;
   const work = workDir("flow-mcp-");
   const staged = join(work, name);
@@ -1167,8 +1167,16 @@ function unpackCollection(zip: string, dir: string, wanted?: { id: string; stem:
     const saved = new Map<string, string>();
     if (!wanted) {
       mkdirSync(dir, { recursive: true });
+      const used = new Set<string>();
       for (const p of entries) {
-        const dest = join(dir, basename(p, extname(p)).replace(/[^\w.-]+/g, "_") + extensionOf(p));
+        const stem = basename(p, extname(p)).replace(/[^\w.-]+/g, "_");
+        const ext = extensionOf(p);
+        let dest = join(dir, `${stem}${ext}`);
+        let n = 2;
+        while (used.has(dest.toLowerCase()) || existsSync(dest)) {
+          dest = join(dir, `${stem} (${n++})${ext}`);
+        }
+        used.add(dest.toLowerCase());
         copyFileSync(p, dest);
         files.push(dest);
       }
@@ -2392,47 +2400,76 @@ export interface CharacterParams {
 }
 
 // Creates a reusable Flow character from an image (local file, or "asset:<title>" already in the project).
+const FORBIDDEN_CHARACTER_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function characterStoreKey(name: string): string {
+  const key = name.toLowerCase();
+  if (FORBIDDEN_CHARACTER_KEYS.has(key)) {
+    throw new Error(`"${name}" cannot be used as a character name.`);
+  }
+  return key;
+}
+
+function loadStringStore(file: string): Record<string, string> {
+  const out: Record<string, string> = Object.create(null);
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!FORBIDDEN_CHARACTER_KEYS.has(k.toLowerCase()) && typeof v === "string") out[k] = v;
+    }
+  } catch {
+    // Missing or unreadable file.
+  }
+  return out;
+}
+
 // Afterwards it can be attached to any scene as reference "asset:<character name>".
 // What each character looks like, so scenes can hold Flow to the same design instead of letting it redraw.
 // Kept on disk so a restarted server still knows the cast.
-const loadLooks = (): Record<string, string> => {
-  try {
-    return JSON.parse(readFileSync(looksFile(currentAccount()), "utf8")) as Record<string, string>;
-  } catch {
-    return {};
-  }
+const loadLooks = (file = looksFile(currentAccount())): Record<string, string> => loadStringStore(file);
+export const characterLook = (name: string, file?: string): string | undefined => {
+  const key = name.toLowerCase();
+  if (FORBIDDEN_CHARACTER_KEYS.has(key)) return undefined;
+  const all = loadLooks(file);
+  return Object.hasOwn(all, key) ? all[key] : undefined;
 };
-export const characterLook = (name: string): string | undefined => loadLooks()[name.toLowerCase()];
-export function forgetCharacter(name: string): void {
-  const all = loadLooks();
-  if (!(name.toLowerCase() in all)) return;
-  delete all[name.toLowerCase()];
-  writeFileSync(looksFile(currentAccount()), JSON.stringify(all, null, 2));
+export function forgetCharacter(name: string, file?: string): void {
+  const key = characterStoreKey(name);
+  const target = file ?? looksFile(currentAccount());
+  const all = loadLooks(target);
+  if (!Object.hasOwn(all, key)) return;
+  delete all[key];
+  writeFileSync(target, JSON.stringify(all, null, 2));
 }
-export function rememberCharacter(name: string, look: string): void {
+export function rememberCharacter(name: string, look: string, file?: string): void {
+  const key = characterStoreKey(name);
   const a = currentAccount();
-  const all = { ...loadLooks(), [name.toLowerCase()]: look.trim() };
-  mkdirSync(accountDir(a), { recursive: true });
-  writeFileSync(looksFile(a), JSON.stringify(all, null, 2));
+  const target = file ?? looksFile(a);
+  const all: Record<string, string> = Object.assign(Object.create(null), loadLooks(target));
+  all[key] = look.trim();
+  mkdirSync(file ? dirname(file) : accountDir(a), { recursive: true });
+  writeFileSync(target, JSON.stringify(all, null, 2));
 }
 
 // Which voice each character has. Flow shows it in the character editor and nowhere else, and a copy of a character (a new
 // outfit) has to get the SAME voice as the original, so the choice is kept on disk too, keyed by name.
-const loadVoices = (): Record<string, string> => {
-  try {
-    return JSON.parse(readFileSync(voicesFile(currentAccount()), "utf8")) as Record<string, string>;
-  } catch {
-    return {};
-  }
+const loadVoices = (file = voicesFile(currentAccount())): Record<string, string> => loadStringStore(file);
+export const characterVoice = (name: string, file?: string): string | undefined => {
+  const key = name.toLowerCase();
+  if (FORBIDDEN_CHARACTER_KEYS.has(key)) return undefined;
+  const all = loadVoices(file);
+  return Object.hasOwn(all, key) ? all[key] : undefined;
 };
-export const characterVoice = (name: string): string | undefined => loadVoices()[name.toLowerCase()];
-export function rememberVoice(name: string, voice: string | undefined): void {
+export function rememberVoice(name: string, voice: string | undefined, file?: string): void {
+  const key = characterStoreKey(name);
   const a = currentAccount();
-  const all = loadVoices();
-  if (voice) all[name.toLowerCase()] = voice;
-  else delete all[name.toLowerCase()];
-  mkdirSync(accountDir(a), { recursive: true });
-  writeFileSync(voicesFile(a), JSON.stringify(all, null, 2));
+  const target = file ?? voicesFile(a);
+  const all: Record<string, string> = Object.assign(Object.create(null), loadVoices(target));
+  if (voice) all[key] = voice;
+  else delete all[key];
+  mkdirSync(file ? dirname(file) : accountDir(a), { recursive: true });
+  writeFileSync(target, JSON.stringify(all, null, 2));
 }
 
 // A tile's textContent is "<name>accessibility_newfavoritemore_vert" (icon ligatures glued on, no space; innerText has a
@@ -2586,7 +2623,7 @@ export async function createCharacter(c: CharacterParams, job?: Job): Promise<{ 
     await option.click();
     await page.getByRole("button", { name: "Add media", exact: true }).click();
   } else {
-    if (!existsSync(image)) throw new Error(`File not found: ${image}`);
+    assertAllowedUploadFile(image);
     const chooser = page.waitForEvent("filechooser", { timeout: 10_000 });
     await page.getByRole("button", { name: "Upload", exact: true }).click();
     await (await chooser).setFiles(image);

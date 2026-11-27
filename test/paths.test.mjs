@@ -9,7 +9,14 @@ test("a project name becomes one safe folder name", () => {
   assert.equal(projectFolderName("v1.2-final"), "v1.2-final");
   assert.equal(projectFolderName("../../etc"), ".._.._etc");
   assert.equal(projectFolderName("a/b\\c"), "a_b_c");
-  assert.equal(projectFolderName("name."), "name.");
+  assert.equal(projectFolderName("name."), "name");
+  assert.equal(projectFolderName("name..."), "name");
+  assert.equal(projectFolderName("CON"), "_CON");
+  assert.equal(projectFolderName("con.txt"), "_con.txt");
+  assert.equal(projectFolderName("NUL."), "_NUL");
+  assert.equal(projectFolderName("lpt1.clip"), "_lpt1.clip");
+  assert.equal(projectFolderName("aux"), "_aux");
+  assert.equal(projectFolderName("console"), "console");
 });
 
 test("names that would climb out of the films folder are refused", () => {

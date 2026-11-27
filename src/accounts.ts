@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG, HOME_DIR } from "./config.js";
+import { WINDOWS_RESERVED_NAMES } from "./paths.js";
 
 export { HOME_DIR };
 const ACCOUNTS_FILE = join(HOME_DIR, "accounts.json");
@@ -14,31 +15,7 @@ export const MAIN = "main";
 const MAIN_PORT = CONFIG.cdpPort;
 
 // Reserved names that must not be used as account folder names (Windows device names and "default").
-const RESERVED_NAMES = new Set([
-  "default",
-  "con",
-  "prn",
-  "aux",
-  "nul",
-  "com1",
-  "com2",
-  "com3",
-  "com4",
-  "com5",
-  "com6",
-  "com7",
-  "com8",
-  "com9",
-  "lpt1",
-  "lpt2",
-  "lpt3",
-  "lpt4",
-  "lpt5",
-  "lpt6",
-  "lpt7",
-  "lpt8",
-  "lpt9",
-]);
+const RESERVED_NAMES = new Set(["default", ...WINDOWS_RESERVED_NAMES]);
 
 export interface Account {
   name: string;

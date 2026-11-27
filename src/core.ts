@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { assemble, voiceTrack } from "./assemble.js";
@@ -1186,13 +1186,29 @@ export class LocalCore implements Core {
   }
 
   // Moves a file or a project folder from the films folder to the system's bin - recoverable from there, never
-  // erased. Anything outside the films folder is refused, so a bad path can never reach the rest of the Mac.
+  // erased. Anything outside the films folder (including through a symlinked parent) is refused.
   async discard({ path }: Args<"discard">) {
     const target = resolve(path);
     // relative() works with either separator; a path that climbs out ("..") or lands on another drive is refused.
     const rel = relative(OUTPUT_ROOT, target);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Only things inside your films folder can be moved to the bin from here.");
-    if (!existsSync(target)) throw new Error("That file is already gone.");
+    let rootReal: string;
+    let parentReal: string;
+    try {
+      rootReal = realpathSync(OUTPUT_ROOT);
+      parentReal = realpathSync(dirname(target));
+    } catch {
+      throw new Error("That file is already gone.");
+    }
+    const parentRel = relative(rootReal, parentReal);
+    if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+      throw new Error("Only things inside your films folder can be moved to the bin from here.");
+    }
+    try {
+      lstatSync(target);
+    } catch {
+      throw new Error("That file is already gone.");
+    }
     return { trashed: target, to: moveToBin(target), bin: BIN };
   }
 

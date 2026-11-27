@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, sep } from "node:path";
 
 // Everything that differs between macOS, Windows and Linux lives here, so the rest of the code stays the same on all
 // three. macOS is the tested platform; the Windows and Linux branches are written to each system's own documented
@@ -207,7 +207,7 @@ export function moveToBin(target: string): string {
     return dest;
   }
   if (IS_WIN) {
-    const kind = statSync(target).isDirectory() ? "DeleteDirectory" : "DeleteFile";
+    const kind = lstatSync(target).isDirectory() ? "DeleteDirectory" : "DeleteFile";
     powershell(
       `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${kind}($env:FLOW_MCP_TARGET, 'OnlyErrorDialogs', 'SendToRecycleBin')`,
       120_000,
@@ -227,8 +227,45 @@ export function moveToBin(target: string): string {
   }
 }
 
+// Walks an extracted archive folder safely: ignores hidden/macOS metadata entries, skips symlinks and non-regular
+// entries, and verifies every resolved path stays inside `dest`.
+export function walkExtractedFiles(dest: string): string[] {
+  const rootReal = realpathSync(dest);
+  const win = process.platform === "win32";
+  const rootNorm = win ? rootReal.toLowerCase() : rootReal;
+  const prefix = rootNorm.endsWith(sep) ? rootNorm : rootNorm + sep;
+  const insideDest = (p: string): boolean => {
+    try {
+      const real = realpathSync(p);
+      const norm = win ? real.toLowerCase() : real;
+      return norm.startsWith(prefix);
+    } catch {
+      return false;
+    }
+  };
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const f of readdirSync(dir)) {
+      if (f.startsWith(".") || f === "__MACOSX") continue;
+      const p = join(dir, f);
+      let st;
+      try {
+        st = lstatSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (!insideDest(p)) continue;
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile()) files.push(p);
+    }
+  };
+  walk(rootReal);
+  return files;
+}
+
 // Unpacks a ZIP with the system's own tools: tar on macOS and Windows 10+ is bsdtar, which reads ZIPs; unzip is the
-// fallback (Linux, older Windows). Returns every file inside, however deeply the archive nested them.
+// fallback (Linux, older Windows). Returns every regular file inside, skipping symlinks and escapes.
 export function extractZip(zip: string, dest: string): string[] {
   mkdirSync(dest, { recursive: true });
   try {
@@ -236,17 +273,7 @@ export function extractZip(zip: string, dest: string): string[] {
   } catch {
     execFileSync("unzip", ["-o", "-q", zip, "-d", dest], { stdio: "ignore" });
   }
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const f of readdirSync(dir)) {
-      if (f.startsWith(".") || f === "__MACOSX") continue;
-      const p = join(dir, f);
-      if (statSync(p).isDirectory()) walk(p);
-      else files.push(p);
-    }
-  };
-  walk(dest);
-  return files;
+  return walkExtractedFiles(dest);
 }
 
 // Opens a page in the default browser.
