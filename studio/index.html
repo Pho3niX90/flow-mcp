@@ -1445,7 +1445,11 @@ const CAP_COLORS = {
   reveal: ["#FFFFFF", "#FFE135", "#9FE06A", "#38BDF8", "#FF4FA3"],
 };
 let capHeard = "", capFor = "", capSetup = null, capTimer, capSeq = 0, capVertical = false;
-const capColor = (style) => S.captions.colors?.[style] ?? CAP_COLORS[style]?.[0];
+const CAP_HEX_RE = /^#[0-9a-fA-F]{6}$/;
+const capColor = (style) => {
+  const saved = S.captions.colors?.[style];
+  return typeof saved === "string" && CAP_HEX_RE.test(saved) ? saved : CAP_COLORS[style]?.[0];
+};
 // Bold pop is capitals unless the user picks otherwise; every other style keeps the words as said.
 const capLetters = (style) => S.captions.letters?.[style] ?? (style === "bold" ? "capitals" : "as_said");
 const CASE_CSS = { as_said: "none", capitals: "uppercase", lowercase: "lowercase" };

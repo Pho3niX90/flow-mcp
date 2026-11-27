@@ -57,6 +57,7 @@ RUN printf '%s\n' '#!/bin/sh' \
 #   docker run -d --name flow-mcp --shm-size=1g \
 #     -p 127.0.0.1:6080:6080 -v flow-mcp-data:/data \
 #     -e FLOW_VNC_PASSWORD='choose-a-password' flow-mcp
+#   (Or pass a secret file with -e FLOW_VNC_PASSWORD_FILE=/run/secrets/vnc_password.)
 #   Open http://127.0.0.1:6080/vnc.html in a browser, connect, and sign in
 #   to Google in the Chrome window. The Chrome profile persists in /data.
 # The VNC protocol only uses the first 8 password characters; use localhost
@@ -65,12 +66,25 @@ RUN <<'SH'
 cat > /usr/local/bin/flow-container-start <<'EOF'
 #!/bin/sh
 set -eu
-: "${FLOW_VNC_PASSWORD:?Set FLOW_VNC_PASSWORD for interactive login (VNC uses the first 8 characters)}"
+if [ -n "${FLOW_VNC_PASSWORD_FILE:-}" ]; then
+  if [ ! -r "$FLOW_VNC_PASSWORD_FILE" ]; then
+    echo "FLOW_VNC_PASSWORD_FILE is not readable: $FLOW_VNC_PASSWORD_FILE" >&2
+    exit 1
+  fi
+  IFS= read -r FLOW_VNC_PASSWORD < "$FLOW_VNC_PASSWORD_FILE" || true
+  FLOW_VNC_PASSWORD="${FLOW_VNC_PASSWORD%$(printf '\r')}"
+fi
+: "${FLOW_VNC_PASSWORD:?Set FLOW_VNC_PASSWORD or FLOW_VNC_PASSWORD_FILE for interactive login (at least 8 characters)}"
+if [ "${#FLOW_VNC_PASSWORD}" -lt 8 ]; then
+  echo "VNC password must be at least 8 characters long." >&2
+  exit 1
+fi
+echo "Warning: publish port 6080 on loopback only (-p 127.0.0.1:6080:6080); never expose noVNC directly on a public interface." >&2
 mkdir -p /data/config /data/output /tmp/flow-vnc
 chmod 700 /tmp/flow-vnc
 x11vnc -storepasswd "$FLOW_VNC_PASSWORD" /tmp/flow-vnc/passwd >/dev/null
 chmod 600 /tmp/flow-vnc/passwd
-unset FLOW_VNC_PASSWORD
+unset FLOW_VNC_PASSWORD FLOW_VNC_PASSWORD_FILE
 Xvfb "$DISPLAY" -screen 0 1440x900x24 -nolisten tcp &
 xvfb_pid=$!
 x_sock="/tmp/.X11-unix/X${DISPLAY#:}"
