@@ -433,19 +433,26 @@ build."* Then fully quit and reopen your assistant app so it loads the new versi
 
 ## Security
 
-- **Flow's Chrome remote-control port:** to drive Flow, this tool starts its dedicated Chrome window with a
-  remote-debugging port (`--remote-debugging-port`) listening on `127.0.0.1` (this computer only) with no
-  password. While that window is open, any program running on your computer can reach that port and drive
-  the signed-in Google session.
-- **Control panel API:** Flow Studio's HTTP API also listens on `127.0.0.1` only and requires a per-run token
-  saved in `~/.flow-mcp/token`.
+- **Local trust boundary:** Flow Studio's panel page (`GET /`) embeds its per-run API token for the browser, and
+  Flow's dedicated Chrome window listens on `127.0.0.1` (`--remote-debugging-port`) with no password. Both
+  protect against remote websites and cross-origin pages (via `Host`/`Origin` checks, CSP, and the token), not
+  against other programs or users on the same computer. Do not run `flow-mcp` on a shared machine.
+- **Tool filtering (`FLOW_MCP_TOOLS`):** `FLOW_MCP_TOOLS` controls which tools are listed at start to keep
+  context small, not which tools are permitted. `flow_call` can invoke any tool by name, so approving `flow_call`
+  approves every tool.
+- **Website content as data:** asset titles, project names, song titles, and error messages returned from Google
+  Flow and Flow Music come from those websites and may contain untrusted text that tries to steer an assistant.
+- **Downloaded models:** speech-to-text caption models (whisper.cpp and Silero VAD) are fetched from pinned
+  Hugging Face commits and verified by SHA-256. The Kokoro voice model is fetched from Hugging Face by the
+  `kokoro-js` library without a pinned revision or digest check.
 - **File and folder boundaries:** downloads go to a dedicated folder under `~/.flow-mcp/`; if Chrome ever
   falls back to your own `~/Downloads` folder, a file is taken only with proof that it came from Flow, so
-  unrelated downloads are never touched. Project names like `..` are refused so outputs can never be written
-  outside your output folder.
+  unrelated downloads are never touched. Project names like `..` and Windows device names are rejected or
+  escaped so outputs stay inside your output folder.
 - **Practical advice:** use a dedicated Google account kept for Flow MCP, close Flow's Chrome window when it
   is not in use (`flow-studio stop` closes it for you), keep two-step verification turned on, and install from
-  a commit you have reviewed rather than updating blindly.
+  a commit you have reviewed rather than updating blindly. See [SECURITY.md](SECURITY.md) for reporting
+  vulnerabilities and the full threat model.
 
 ---
 
