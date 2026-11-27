@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { requireLocalFile } from "./chain.js";
 import { FFMPEG_HINT, ffmpeg, ffprobe } from "./platform.js";
 
 const run = promisify(execFile);
@@ -167,11 +168,13 @@ export function computeDifferenceMatte(w: Uint8Array, b: Uint8Array, width: numb
 }
 
 export async function differenceMatte(onWhite: string, onBlack: string, out: string): Promise<MatteResult> {
-  const { width, height } = await size(onWhite);
+  const whiteFile = requireLocalFile(onWhite, "White take");
+  const blackFile = requireLocalFile(onBlack, "Black take");
+  const { width, height } = await size(whiteFile);
   if (width * height > MAX_PIXELS) throw new Error(`${width}x${height} is too large for a cutout.`);
   // One after the other: each is a fraction of a second, and two ffmpeg at once gained nothing.
-  const w = await pixels(onWhite, width, height);
-  const b = await pixels(onBlack, width, height);
+  const w = await pixels(whiteFile, width, height);
+  const b = await pixels(blackFile, width, height);
   const { rgba, ...stats } = computeDifferenceMatte(w, b, width, height);
   await writePng(rgba, width, height, out);
   return { file: out, ...stats };

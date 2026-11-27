@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { renderEndCard } from "./captions.js";
+import { requireLocalFile } from "./chain.js";
 import { FFMPEG_HINT, ffmpeg, ffprobe, workDir } from "./platform.js";
 
 const run = promisify(execFile);
@@ -246,7 +247,8 @@ function defaultClips(dir: string): string[] {
 
 // Pulls the spoken track out of a generated clip so Flow's voices can be used as narration.
 export async function extractAudio(video: string, target: string): Promise<{ output: string; duration: number }> {
-  await run(ffmpeg(), ["-y", "-i", video, "-vn", "-af", "highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=120,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
+  const src = requireLocalFile(video, "Video");
+  await run(ffmpeg(), ["-y", "-i", src, "-vn", "-af", "highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=120,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2", target]);
   const { stdout } = await run(ffprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", target]);
   return { output: target, duration: Number(stdout.trim()) };
 }
@@ -273,7 +275,7 @@ export async function voiceTrack(lines: VoiceLine[], out: string): Promise<{ fil
     const quiet = (keep: number) => `silenceremove=start_periods=1:start_threshold=-42dB:start_silence=${keep}`;
     const cuts: { file: string; seconds: number }[] = [];
     for (const [i, l] of lines.entries()) {
-      if (!existsSync(l.file)) throw new Error(`File not found: ${l.file}`);
+      requireLocalFile(l.file);
       const from = Math.max(0, l.from ?? 0);
       const trim = `atrim=start=${from.toFixed(3)}${l.to !== undefined ? `:end=${l.to.toFixed(3)}` : ""}`;
       const cut = join(work, `line-${i + 1}.wav`);
@@ -345,7 +347,7 @@ export async function assemble(o: AssembleOptions): Promise<{ output: string; cl
   const out = join(o.dir, o.output_name.replace(/[^\w.-]+/g, "_").replace(/(\.mp4)?$/, ".mp4"));
   const clips = (o.clips?.length ? o.clips : defaultClips(o.dir)).filter((c) => c !== out);
   if (!clips.length) throw new Error(`No clips found in ${o.dir}. Generate or download a clip first, or pass clips explicitly.`);
-  for (const f of [...clips, o.music, o.voiceover, ...(o.inserts ?? []).map((x) => x.clip)]) if (f && !existsSync(f)) throw new Error(`File not found: ${f}`);
+  for (const f of [...clips, o.music, o.voiceover, ...(o.inserts ?? []).map((x) => x.clip)]) if (f) requireLocalFile(f);
 
   // Trimming lives here, so a dead second at the start of a take or an awkward pause at its end never needs a
   // separate editor. The window is clamped to the clip, so a slightly long "to" is harmless.

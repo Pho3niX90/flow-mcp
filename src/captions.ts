@@ -6,6 +6,7 @@ import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import { chromium, type Browser, type Page } from "playwright-core";
 
+import { requireLocalFile } from "./chain.js";
 import { chromeExecutable, HOME_DIR } from "./chrome.js";
 import { FFMPEG_HINT, IS_MAC, IS_WIN, ffmpeg, ffprobe, systemTool, workDir } from "./platform.js";
 
@@ -225,7 +226,7 @@ function fetchModel(kind: SpeechModel): Promise<string> {
 }
 
 async function probe(file: string, needPicture = true): Promise<{ width: number; height: number; duration: number; audio?: string }> {
-  if (!existsSync(file)) throw new Error(`No video at ${file}.`);
+  requireLocalFile(file, "Video");
   const { stdout } = await run(
     ffprobe(),
     ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height:stream_side_data=rotation:stream_tags=rotate:format=duration", "-of", "json", file],
@@ -702,7 +703,7 @@ ${css}
 ${UNSPACED.has(lang) ? ".w{margin-left:.03em;margin-right:.03em}" + (style === "highlight" ? ".w{margin-left:-.07em;margin-right:-.07em}" : "") : ""}
 </style></head><body><div class="cap"><div class="inner" id="inner"></div></div><script>
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const NAMES = new Set(${JSON.stringify(o.letters === "lowercase" ? (o.names ?? []) : [])});
+const NAMES = new Set(${JSON.stringify(o.letters === "lowercase" ? (o.names ?? []) : []).replace(/</g, "\\u003c")});
 const isName = (w) => NAMES.has(w.toLowerCase().replace(/[^\\p{L}\\p{N}']+/gu, ""));
 window.paint = (s) => {
   const el = document.getElementById("inner");

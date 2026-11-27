@@ -7,7 +7,7 @@ import { GEMINI_VOICES, checkGeminiKey, geminiKey, saveGeminiKey, speakWithGemin
 import { KOKORO_DEFAULT_VOICE, KOKORO_MB, KOKORO_VOICES, kokoroReady, speakWithKokoro } from "./kokoro.js";
 import { extractFirstFrame, extractFrameAt, extractLastFrame } from "./chain.js";
 import { burnCaptions, captionedName, captionSetup, previewCaptions, transcribe } from "./captions.js";
-import { presenter } from "./presenter.js";
+import { presenter, RING_COLOR_RE } from "./presenter.js";
 import { characterLook, characterVoice, characterVoices, createCharacter, createProject, downloadAsset, downloadCollection, imageModelFor, LATEST_IMAGE_MODEL, listImageModels, listProjectsSummary, openProject, refOf, renameAsset, renameProject, setCharacterVoice, trashAsset, editCharacter, getFlowState, listAssets, forgetCharacter, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration, runImageBatch } from "./flow.js";
 import { accountByName, addAccount, defaultAccount, defaultImageModel, enabledAccounts, listAccounts, loadSettings, onAccount, profileDir, saveSettings, setAccountEnabled } from "./accounts.js";
 import { getFlowPage } from "./chrome.js";
@@ -326,7 +326,7 @@ export const shapes = {
         size: z.number().min(0.15).max(0.7).optional().describe("Circle diameter as a fraction of the frame's height. Default 0.36: readable on a phone."),
         face: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), w: z.number().min(0.1).max(1) }).optional().describe("The square of the recording to show in the circle: centre x, centre y, width, as fractions of the recording."),
         margin: z.number().min(0).max(0.2).optional(),
-        ring_color: z.string().optional(),
+        ring_color: z.string().regex(RING_COLOR_RE).optional(),
       })
       .optional(),
     size: z.string().regex(/^\d{2,4}x\d{2,4}$/).optional().describe("Film size. Default 1920x1080."),
@@ -720,15 +720,18 @@ export class LocalCore implements Core {
     // continued after the user has looked at it.
     const ff = job.params.first_frame;
     if (ff && !ff.startsWith("asset:") && /\.(mp4|webm|mov)$/i.test(ff))
-      job.params.first_frame = job.params.first_frame_at !== undefined ? await extractFrameAt(ff, job.params.first_frame_at) : await extractLastFrame(ff);
+      job.params.first_frame =
+        job.params.first_frame_at !== undefined
+          ? await extractFrameAt(ff, job.params.first_frame_at, job.params.output_dir)
+          : await extractLastFrame(ff, job.params.output_dir);
     // And a clip given as the last frame means "end where it begins": with both, a middle clip can be redone without
     // touching the clips on either side.
     const lf = job.params.last_frame;
-    if (lf && !lf.startsWith("asset:") && /\.(mp4|webm|mov)$/i.test(lf)) job.params.last_frame = await extractFirstFrame(lf);
+    if (lf && !lf.startsWith("asset:") && /\.(mp4|webm|mov)$/i.test(lf)) job.params.last_frame = await extractFirstFrame(lf, job.params.output_dir);
     if (chain_from) {
       const clip = this.queue.get(chain_from)?.files.find((f) => /\.(mp4|webm|mov)$/i.test(f));
       if (!clip) throw new Error(`chain_previous: the previous scene (${chain_from}) produced no video, so this scene was skipped.`);
-      job.params.first_frame = await extractLastFrame(clip);
+      job.params.first_frame = await extractLastFrame(clip, job.params.output_dir);
     }
     if (job.params.matte_from) return this.runCutout(job, job.params.matte_from);
     if (job.params.continue_from) return runContinue(job);

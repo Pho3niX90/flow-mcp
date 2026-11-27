@@ -1,11 +1,21 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { requireLocalFile } from "./chain.js";
 import { FFMPEG_HINT, ffmpeg, ffprobe, workDir } from "./platform.js";
 
 const run = promisify(execFile);
+
+export const RING_COLOR_RE = /^(#[0-9a-fA-F]{6}|[a-zA-Z]{3,20})$/;
+
+export function validateRingColor(color: string): string {
+  if (!RING_COLOR_RE.test(color)) {
+    throw new Error(`Invalid ring_color "${color}": use a colour name like "white" or a #RRGGBB hex code.`);
+  }
+  return color;
+}
 
 // A talking presenter over footage, built from one recording of them: each stretch of the recording is shown full
 // frame (optionally with a slow zoom) or in a circle in a corner over another clip. The sound is always the presenter's.
@@ -74,6 +84,7 @@ async function shrinkClip(o: {
   presenter: string; from: number; seconds: number; background: string; backgroundFrom: number; fps: number; W: number; H: number;
   crop: { x: number; y: number; w: number }; info: { width: number; height: number }; target: { x: number; y: number; d: number }; ringColor: string; ring: number; dir: string; out: string;
 }): Promise<void> {
+  const ringColor = validateRingColor(o.ringColor);
   const frames = Math.max(2, Math.round(o.seconds * o.fps));
   const ease = (t: number) => t * t * (3 - 2 * t);
   for (let i = 0; i < frames; i++) {
@@ -97,7 +108,7 @@ async function shrinkClip(o: {
       `[0:v]scale=${o.W}:${o.H}:flags=lanczos,format=rgba[bg]`,
       `[1:v]crop=${even(shapeW)}:${even(shapeH)}:${sx}:${Math.round(sy)},scale=${outW}:${outH}:flags=lanczos,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alpha}'[fg]`,
       ringOn
-        ? `color=${o.ringColor}:s=${outW + o.ring * 2}x${outH + o.ring * 2},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${radius < 1 ? "255" : `255*clip(${radius + o.ring}-(if(gt(abs(X-${outW / 2 + o.ring})\\,${outW / 2 - radius})*gt(abs(Y-${outH / 2 + o.ring})\\,${outH / 2 - radius})\\,hypot(abs(X-${outW / 2 + o.ring})-${outW / 2 - radius}\\,abs(Y-${outH / 2 + o.ring})-${outH / 2 - radius})\\,${radius + o.ring - 1}))+0.5\\,0\\,1)`}'[r];[bg][r]overlay=${x - o.ring}:${y - o.ring}[b2];[b2][fg]overlay=${x}:${y},format=rgb24[out]`
+        ? `color=${ringColor}:s=${outW + o.ring * 2}x${outH + o.ring * 2},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${radius < 1 ? "255" : `255*clip(${radius + o.ring}-(if(gt(abs(X-${outW / 2 + o.ring})\\,${outW / 2 - radius})*gt(abs(Y-${outH / 2 + o.ring})\\,${outH / 2 - radius})\\,hypot(abs(X-${outW / 2 + o.ring})-${outW / 2 - radius}\\,abs(Y-${outH / 2 + o.ring})-${outH / 2 - radius})\\,${radius + o.ring - 1}))+0.5\\,0\\,1)`}'[r];[bg][r]overlay=${x - o.ring}:${y - o.ring}[b2];[b2][fg]overlay=${x}:${y},format=rgb24[out]`
         : `[bg][fg]overlay=${x}:${y},format=rgb24[out]`,
     ].join(";");
     await run(ffmpeg(), ["-v", "error", "-y", "-ss", (o.backgroundFrom + i / o.fps).toFixed(3), "-i", o.background, "-ss", at.toFixed(3), "-i", o.presenter, "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", join(o.dir, `f${String(i).padStart(4, "0")}.png`)]);
@@ -109,7 +120,8 @@ const q = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
 export async function presenter(o: PresenterOptions): Promise<{ output: string; duration: number; segments: number }> {
   if (!o.segments.length) throw new Error("Give at least one segment.");
-  for (const f of [o.presenter, ...o.segments.map((s) => s.background?.clip)]) if (f && !existsSync(f)) throw new Error(`File not found: ${f}`);
+  const c = validateRingColor(o.corner?.ring_color ?? "white");
+  for (const f of [o.presenter, ...o.segments.map((s) => s.background?.clip)]) if (f) requireLocalFile(f);
   const info = await probe(o.presenter);
   for (const [i, s] of o.segments.entries()) {
     if (s.to <= s.from) throw new Error(`Segment ${i + 1} ends before it starts.`);
@@ -139,7 +151,6 @@ export async function presenter(o: PresenterOptions): Promise<{ output: string; 
     const mask = join(work, "mask.png");
     const ringPng = join(work, "ring.png");
     await run(ffmpeg(), ["-v", "error", "-y", "-f", "lavfi", "-i", `color=black:s=${D}x${D}`, "-frames:v", "1", "-vf", `format=gray,geq=lum='${circle(D)}'`, mask]);
-    const c = o.corner?.ring_color ?? "white";
     await run(ffmpeg(), ["-v", "error", "-y", "-f", "lavfi", "-i", `color=${c}:s=${R}x${R}`, "-frames:v", "1", "-vf", `format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${circle(R)}'`, ringPng]);
 
     const total = o.segments.reduce((sum, s) => sum + (s.to - s.from), 0);
