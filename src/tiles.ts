@@ -39,3 +39,13 @@ export function parseVoiceFromSnapshot(snap: string): string | undefined {
   const at = lines.findIndex((l) => l.includes('button "Play preview"'));
   return at > 0 ? lines[at - 1].match(/button "([^"]+)"/)?.[1] : undefined;
 }
+
+// Parses a Flow credit quote like "25 credits" or "1,200 credits". Returns NaN when the text is not a plain count.
+export function parseCreditQuote(text: string): number {
+  const m = text.match(/^\s*(\d[\d,]*)\s+credits?\s*$/i);
+  if (!m) return NaN;
+  const digits = m[1].replace(/,/g, "");
+  if (!/^\d+$/.test(digits)) return NaN;
+  const n = Number(digits);
+  return Number.isSafeInteger(n) ? n : NaN;
+}

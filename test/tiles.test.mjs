@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, extractMediaIdFromUrl, parseVoiceFromSnapshot } from "../dist/tiles.js";
+import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, extractMediaIdFromUrl, parseCreditQuote, parseVoiceFromSnapshot } from "../dist/tiles.js";
 
 test("extractMediaIdFromUrl reads UUIDs from Flow media URLs", () => {
   const uuid = "123e4567-e89b-12d3-a456-426614174000";
@@ -79,4 +79,16 @@ test("parseVoiceFromSnapshot reads the voice button right before Play preview", 
     undefined,
   );
   assert.equal(parseVoiceFromSnapshot(`- heading "Character"`), undefined);
+});
+
+test("parseCreditQuote parses comma-grouped credit counts and rejects non-counts", () => {
+  assert.equal(parseCreditQuote("1,200 credits"), 1200);
+  assert.equal(parseCreditQuote("25 credits"), 25);
+  assert.equal(parseCreditQuote("1 credit"), 1);
+  assert.equal(parseCreditQuote("1,2,3 credits"), 123);
+  assert.equal(parseCreditQuote(" 0 credits "), 0);
+  assert.equal(Number.isNaN(parseCreditQuote("Add AI credits")), true);
+  assert.equal(Number.isNaN(parseCreditQuote("")), true);
+  assert.equal(Number.isNaN(parseCreditQuote("9999999999999999999999 credits")), true);
+  assert.equal(Number.isNaN(parseCreditQuote("25 credits extra")), true);
 });

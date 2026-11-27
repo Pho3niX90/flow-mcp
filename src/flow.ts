@@ -11,7 +11,7 @@ import { matchScenes, matchSent } from "./match.js";
 import { downloadsNow, extensionOf, oneDownloadAtATime, useOwnDownloadDir, waitForDownloadedFile } from "./page-downloads.js";
 import { isProjectGridUrl, validateProjectTitle } from "./paths.js";
 import { extractZip, moveFile, workDir } from "./platform.js";
-import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseVoiceFromSnapshot } from "./tiles.js";
+import { ASB_TOKEN_RE, MEDIA_UUID_RE, OUR_TITLE, characterTilePattern, cssAttrValue, parseCreditQuote, parseVoiceFromSnapshot } from "./tiles.js";
 import { trace } from "./trace.js";
 import { matchesModelLabel } from "./video-models.js";
 
@@ -726,7 +726,7 @@ async function applySettings(page: Page, job: Job): Promise<number> {
   await pause(page, 600);
   // The quote is "<N> credits". Low balances add an "Add AI credits" banner link that the old /credits?$/ also matched.
   const costText = await page.getByRole("link", { name: /^\d[\d,]*\s+credits?$/ }).first().innerText();
-  const cost = Number(costText.match(/\d+/)?.[0] ?? NaN);
+  const cost = parseCreditQuote(costText);
   await closeSettings(page);
   if (Number.isNaN(cost)) throw new Error(`Could not read the credit cost from Flow ("${costText}").`);
   return cost;
