@@ -433,26 +433,33 @@ build."* Then fully quit and reopen your assistant app so it loads the new versi
 
 ## Security
 
-- **Local trust boundary:** Flow Studio's panel page (`GET /`) embeds its per-run API token for the browser, and
-  Flow's dedicated Chrome window listens on `127.0.0.1` (`--remote-debugging-port`) with no password. Both
-  protect against remote websites and cross-origin pages (via `Host`/`Origin` checks, CSP, and the token), not
-  against other programs or users on the same computer. Do not run `flow-mcp` on a shared machine.
-- **Tool filtering (`FLOW_MCP_TOOLS`):** `FLOW_MCP_TOOLS` controls which tools are listed at start to keep
-  context small, not which tools are permitted. `flow_call` can invoke any tool by name, so approving `flow_call`
-  approves every tool.
-- **Website content as data:** asset titles, project names, song titles, and error messages returned from Google
-  Flow and Flow Music come from those websites and may contain untrusted text that tries to steer an assistant.
-- **Downloaded models:** speech-to-text caption models (whisper.cpp and Silero VAD) are fetched from pinned
-  Hugging Face commits and verified by SHA-256. The Kokoro voice model is fetched from Hugging Face by the
-  `kokoro-js` library without a pinned revision or digest check.
-- **File and folder boundaries:** downloads go to a dedicated folder under `~/.flow-mcp/`; if Chrome ever
-  falls back to your own `~/Downloads` folder, a file is taken only with proof that it came from Flow, so
-  unrelated downloads are never touched. Project names like `..` and Windows device names are rejected or
-  escaped so outputs stay inside your output folder.
-- **Practical advice:** use a dedicated Google account kept for Flow MCP, close Flow's Chrome window when it
-  is not in use (`flow-studio stop` closes it for you), keep two-step verification turned on, and install from
-  a commit you have reviewed rather than updating blindly. See [SECURITY.md](SECURITY.md) for reporting
-  vulnerabilities and the full threat model.
+flow-mcp is built for one person on their own computer. It protects you from websites; it does not protect you
+from other programs or other people using the same computer.
+
+- **What a website cannot do:** a page you visit in any browser cannot read the panel, call its API, put it in a
+  frame, or reach Flow's Chrome window. The panel and its API listen on `127.0.0.1` (this computer only), check
+  where each request comes from, and need a token that changes every time the service starts.
+- **What another program on this computer can do:** the panel page hands its token to any local program that
+  asks for it, and Flow's Chrome window is started with a remote-control port (`--remote-debugging-port`) that
+  has no password. Anything running on your computer, under any user, can therefore drive the signed-in Google
+  session while that window is open. Do not run flow-mcp on a shared computer.
+- **Your files:** downloads go to a dedicated folder under `~/.flow-mcp/`. If Chrome ever falls back to your own
+  `~/Downloads` folder, a file is taken only with proof that it came from Flow, so unrelated downloads are never
+  touched. Outputs are always written inside your output folder: project names like `..` are refused, and links
+  that point out of the folder are not followed. Only pictures, video and audio are ever uploaded to Flow.
+- **Text from the websites:** project names, titles, song names and error messages come from Google Flow and
+  Flow Music. An assistant should treat them as content, not as instructions, and the tools tell it so.
+- **Tool groups are not permissions:** `FLOW_MCP_TOOLS` chooses which tools are listed at the start, to keep an
+  assistant's context small. It does not block the others: `flow_call` can run any tool by name, so approving
+  `flow_call` in your assistant approves every tool.
+- **Downloaded models:** the caption models (whisper.cpp and Silero) are fetched from fixed versions on Hugging
+  Face and checked against a known checksum before use. The Kokoro voice model is fetched by its own library
+  from Hugging Face without such a check.
+- **Practical advice:** use a Google account kept for flow-mcp, close Flow's Chrome window when it is not in use
+  (`flow-studio stop` closes it for you), keep two-step verification turned on, and install from a commit you
+  have reviewed rather than updating blindly.
+
+To report a security problem, see [SECURITY.md](SECURITY.md).
 
 ---
 
