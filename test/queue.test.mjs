@@ -363,25 +363,37 @@ test("JobQueue direct-call reservations block overlapping jobs and concurrent di
   // 1. Direct call is refused while a job runs on the same (account, lane), allowed on another lane.
   const j1 = queue.add(baseParams("j1"));
   await waitUntil(() => jobStarted);
-  assert.equal(queue.reserveDirect("main", "flow"), false);
-  assert.equal(queue.reserveDirect("main", "music"), true);
-  queue.releaseDirect("main", "music");
+  assert.equal(await queue.acquireDirect("main", "flow"), null);
+  const musicBack = await queue.acquireDirect("main", "music");
+  assert.equal(typeof musicBack, "function");
+  musicBack();
   releaseJob();
   await waitUntil(() => j1.status === "done");
 
-  // 2. While a direct call holds the lane, a second direct call is refused AND a queued job waits until release.
-  assert.equal(queue.reserveDirect("main", "flow"), true);
+  // 2. While a direct call holds the lane, a second direct call waits its turn AND a queued job waits for both.
+  const firstBack = await queue.acquireDirect("main", "flow");
+  assert.equal(typeof firstBack, "function");
   assert.equal(queue.busyOn("main", "flow"), true);
-  assert.equal(queue.reserveDirect("main", "flow"), false);
+  let secondBack;
+  const second = queue.acquireDirect("main", "flow").then((back) => (secondBack = back));
 
   const j2 = queue.add(baseParams("j2"));
   await sleep(60);
+  assert.equal(secondBack, undefined, "the second direct call must wait for the first");
   assert.equal(j2.status, "queued", "queued job must wait while direct call holds the lane");
+
+  firstBack();
+  firstBack(); // giving it back twice changes nothing
+  await second;
+  assert.equal(typeof secondBack, "function");
+  await sleep(60);
+  assert.equal(j2.status, "queued", "queued job must not slip in between two direct calls");
   assert.equal(queuedRanAfterDirect, false);
 
-  queue.releaseDirect("main", "flow");
+  secondBack();
   await waitUntil(() => j2.status === "done");
   assert.equal(queuedRanAfterDirect, true);
+  assert.equal(queue.busyOn("main", "flow"), false);
 });
 
 test("JobQueue prunes oldest finished jobs past maxFinishedJobs while keeping queued and running jobs", async () => {

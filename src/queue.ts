@@ -124,8 +124,11 @@ export class JobQueue {
   private workers = new Map<string, Worker>();
   // Jobs a worker has taken but not started yet (it is still in its pause): no other worker may take them.
   private claimed = new Set<string>();
-  // Accounts/lanes currently held by a direct (non-queued) call so queued jobs and concurrent direct calls stay out.
-  private directActive = new Set<string>();
+  // How many direct (non-queued) calls hold or are waiting for each account's lane. While it is above zero no queued
+  // job starts there, so a job can never slip in between two direct calls.
+  private directHeld = new Map<string, number>();
+  // The end of each lane's line of direct calls: the next one waits for it.
+  private directTail = new Map<string, Promise<void>>();
 
   constructor(
     private runner: JobRunner,
@@ -173,22 +176,44 @@ export class JobQueue {
     return this.list().some((j) => j.status === "running");
   }
 
-  // Whether this account's window for `lane` is in the middle of a job or a direct call.
-  busyOn(account: string, lane: Lane = "flow"): boolean {
-    if (this.directActive.has(workerKey(account, lane))) return true;
+  private jobRunningOn(account: string, lane: Lane): boolean {
     return this.list().some((j) => j.status === "running" && j.account !== undefined && same(j.account, account) && laneOf(j) === lane);
   }
 
-  // Reserves `(account, lane)` for a direct call. Fails when a job or another direct call already holds it.
-  reserveDirect(account: string, lane: Lane = "flow"): boolean {
-    if (this.busyOn(account, lane)) return false;
-    this.directActive.add(workerKey(account, lane));
-    return true;
+  // Whether this account's window for `lane` is in the middle of a job or a direct call.
+  busyOn(account: string, lane: Lane = "flow"): boolean {
+    return this.directHeld.has(workerKey(account, lane)) || this.jobRunningOn(account, lane);
   }
 
-  // Releases a direct-call reservation and kicks any queued jobs that waited for the lane to clear.
-  releaseDirect(account: string, lane: Lane = "flow"): void {
-    if (this.directActive.delete(workerKey(account, lane))) this.kick();
+  // Takes this account's window for a direct call (open a project, list the library, rename, bin). A job running
+  // there is not waited for: the answer is null and the caller says the window is busy. Direct calls do wait for each
+  // other, in the order they came: the panel asks for several things at once when it opens, and each used to click
+  // around the same page at the same time. Returns the function that gives the window back; queued jobs start again
+  // once the last direct call has.
+  async acquireDirect(account: string, lane: Lane = "flow"): Promise<(() => void) | null> {
+    if (this.jobRunningOn(account, lane)) return null;
+    const key = workerKey(account, lane);
+    this.directHeld.set(key, (this.directHeld.get(key) ?? 0) + 1);
+    const before = this.directTail.get(key) ?? Promise.resolve();
+    let finish!: () => void;
+    const mine = new Promise<void>((r) => (finish = r));
+    const tail = before.then(() => mine);
+    this.directTail.set(key, tail);
+    await before;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      finish();
+      const left = (this.directHeld.get(key) ?? 1) - 1;
+      if (left > 0) {
+        this.directHeld.set(key, left);
+        return;
+      }
+      this.directHeld.delete(key);
+      if (this.directTail.get(key) === tail) this.directTail.delete(key);
+      this.kick();
+    };
   }
 
   get pausedReason(): string | null {
@@ -310,7 +335,7 @@ export class JobQueue {
   // (flow lane only), or one single job otherwise. An account that is not ready on this lane leaves unpinned work to
   // the others - unless none is ready on this lane, when the first account takes it and fails it with the reason.
   private nextBatch(w: Worker): Job[] {
-    if (this.directActive.has(workerKey(w.account, w.lane))) return [];
+    if (this.directHeld.has(workerKey(w.account, w.lane))) return [];
     const accounts = this.hooks.accounts();
     const anyReady = accounts.some((a) => !this.worker(a, w.lane)?.notReady);
     const takesUnpinned = !w.notReady || (!anyReady && accounts[0] === w.account);
@@ -344,7 +369,7 @@ export class JobQueue {
     try {
       for (;;) {
         if (!this.hooks.accounts().some((a) => same(a, w.account))) return; // disabled meanwhile
-        if (this.directActive.has(workerKey(w.account, w.lane))) return; // releaseDirect() will kick() us again
+        if (this.directHeld.has(workerKey(w.account, w.lane))) return; // giving the window back kicks us again
         this.failStuck();
         // An account that was not ready is checked again now and then: the user may have signed it in since.
         if (w.notReady && Date.now() - w.notReady.at > RECHECK_MS) w.notReady = undefined;
@@ -369,7 +394,7 @@ export class JobQueue {
               w.pausedReason = null;
             }
           }
-          if (this.directActive.has(workerKey(w.account, w.lane))) return;
+          if (this.directHeld.has(workerKey(w.account, w.lane))) return;
           live = batch.filter((j) => j.status === "queued");
           if (!live.length) continue; // cancelled during the pause
           for (const j of live) {

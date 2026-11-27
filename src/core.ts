@@ -816,18 +816,20 @@ export class LocalCore implements Core {
     }
   }
 
-  // Calls that drive one account's site window directly (not through the queue) reserve that account's lane so
-  // neither a queued job nor a second direct call can drive the same tab concurrently.
+  // Calls that drive one account's site window directly (not through the queue) run on the account asked for, or the
+  // first one. If that window is in the middle of a job they say so instead of waiting. They take the window for as
+  // long as they run, so no queued job starts on it meanwhile, and two direct calls take turns.
   private async direct<T>(account: string | undefined, work: () => Promise<T>, lane: Lane = "flow"): Promise<T> {
     const target = account ? accountByName(account) : defaultAccount();
-    if (!this.queue.reserveDirect(target.name, lane)) {
+    const giveBack = await this.queue.acquireDirect(target.name, lane);
+    if (!giveBack) {
       const msg = lane === "music" ? "A song is generating in the Flow Music window. Wait for it to finish (flow_wait), then retry." : BUSY;
       throw new Error(`${msg} (account "${target.name}")`);
     }
     try {
       return await onAccount(target, work);
     } finally {
-      this.queue.releaseDirect(target.name, lane);
+      giveBack();
     }
   }
 

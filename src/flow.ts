@@ -1171,11 +1171,10 @@ function unpackCollection(zip: string, dir: string, wanted?: { id: string; stem:
       for (const p of entries) {
         const stem = basename(p, extname(p)).replace(/[^\w.-]+/g, "_");
         const ext = extensionOf(p);
+        // Two members whose names come out the same must not overwrite each other. A file from an earlier download of
+        // the same collection is still replaced, so downloading again does not pile up copies.
         let dest = join(dir, `${stem}${ext}`);
-        let n = 2;
-        while (used.has(dest.toLowerCase()) || existsSync(dest)) {
-          dest = join(dir, `${stem} (${n++})${ext}`);
-        }
+        for (let n = 2; used.has(dest.toLowerCase()); n++) dest = join(dir, `${stem}_${n}${ext}`);
         used.add(dest.toLowerCase());
         copyFileSync(p, dest);
         files.push(dest);

@@ -38,7 +38,7 @@ const SPEECH_MODELS = {
     file: "ggml-large-v3-turbo-q5_0.bin",
     mb: 574,
     purpose: "for this language",
-    sha256: "394221709cd5ad1f40c66e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+    sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
   },
   // Only names the spoken language, for "auto": right on all 8 test languages in 0.2 s, so an English speaker who never
   // picks a language is not sent the 574 MB model.
