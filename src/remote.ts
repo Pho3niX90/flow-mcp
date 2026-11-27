@@ -8,6 +8,7 @@ async function call(method: string, args: unknown): Promise<unknown> {
     method: "POST",
     headers: { "content-type": "application/json", "x-flow-token": readFileSync(TOKEN_FILE, "utf8").trim() },
     body: JSON.stringify(args ?? {}),
+    redirect: "error",
   });
   const data = (await res.json()) as { error?: string };
   if (!res.ok) throw new Error(data.error ?? `flow-mcp owner process answered ${res.status}`);

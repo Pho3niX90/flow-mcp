@@ -155,7 +155,7 @@ export function debugBrowserCommandLines(): string[] {
   try {
     const out = IS_WIN
       ? powershell("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--remote-debugging-port=*' } | ForEach-Object { $_.CommandLine }", 20_000)
-      : execFileSync("ps", ["-axo", "args="], { encoding: "utf8", timeout: 10_000 });
+      : execFileSync("ps", ["-xo", "args="], { encoding: "utf8", timeout: 10_000 });
     // The PowerShell that asks carries the same text in its own command line.
     return out
       .split(/\r?\n/)

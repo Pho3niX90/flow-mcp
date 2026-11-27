@@ -21,6 +21,7 @@ import {
   readConfig,
   readState,
   rotateLogIfNeeded,
+  validPid,
   type Health,
   type OwnerKind,
 } from "./config.js";
@@ -45,6 +46,7 @@ interface Owner {
   kind?: OwnerKind;
   started?: string;
   busy: boolean;
+  fromState: boolean;
 }
 
 // The flow-mcp process serving the panel for this folder, confirmed by asking it. The note on disk only says where to
@@ -54,13 +56,13 @@ async function findOwner(): Promise<Owner | null> {
   if (state) {
     const answer = await health(state.port);
     if (answer?.name === "flow-mcp" && answer.pid === state.pid) {
-      return { port: state.port, url: `http://127.0.0.1:${state.port}`, pid: state.pid, kind: answer.kind, started: state.started, busy: Boolean(answer.busy) };
+      return { port: state.port, url: `http://127.0.0.1:${state.port}`, pid: state.pid, kind: answer.kind, started: state.started, busy: Boolean(answer.busy), fromState: true };
     }
   }
   // An older flow-mcp leaves no note, and answers on the usual port.
   const answer: Health | null = await health(CONFIG.port);
   if (answer?.name !== "flow-mcp") return null;
-  return { port: CONFIG.port, url: `http://127.0.0.1:${CONFIG.port}`, pid: answer.pid, kind: answer.kind, busy: Boolean(answer.busy) };
+  return { port: CONFIG.port, url: `http://127.0.0.1:${CONFIG.port}`, pid: validPid(answer.pid) ? answer.pid : undefined, kind: answer.kind, busy: Boolean(answer.busy), fromState: false };
 }
 
 const describe = (o: Owner) => `${o.kind ? WHO[o.kind] : "by another flow-mcp"}${o.pid ? `, process ${o.pid}` : ""}`;
@@ -127,6 +129,12 @@ async function stop(): Promise<number> {
     );
     return 1;
   }
+  if (owner && !owner.fromState) {
+    console.error(
+      `Flow Studio at ${owner.url} has no studio.json record for this folder (it may have been started by an older version). Close it by hand; nothing was stopped.`,
+    );
+    return 1;
+  }
   const force = flag("force");
   if (owner?.busy && !force) {
     console.error(`Flow Studio is in the middle of making something. Nothing was stopped: wait for it to finish, or use flow-studio stop --force.`);
@@ -135,8 +143,8 @@ async function stop(): Promise<number> {
   if (!owner) console.log("Flow Studio is not running.");
   else {
     const pid = owner.pid;
-    if (!pid) {
-      console.error(`Flow Studio at ${owner.url} did not report its process id, so it could not be verified. Nothing was stopped.`);
+    if (!validPid(pid)) {
+      console.error(`Flow Studio at ${owner.url} did not report a valid process id, so it could not be verified. Nothing was stopped.`);
       return 1;
     }
     // Ask it to finish by itself first, passing the force flag so the server itself enforces the busy guard.
@@ -147,6 +155,7 @@ async function stop(): Promise<number> {
         "x-flow-token": existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "",
       },
       body: JSON.stringify({ force }),
+      redirect: "error",
       signal: AbortSignal.timeout(5000),
     }).catch(() => null);
 

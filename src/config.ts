@@ -35,6 +35,7 @@ export interface Config {
 export const DEFAULTS: Config = { port: 8787, cdpPort: 9333, output: join(homedir(), "flow-mcp-out") };
 
 const validPort = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1024 && (n as number) <= 65535;
+export const validPid = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0;
 
 // config.json holds the user's own choices. A bad file never stops the tools from starting: the broken setting falls
 // back to its default and the problem is reported, so `flow-studio status` can show it.
@@ -119,7 +120,7 @@ export function pidAlive(pid: number): boolean {
 export function readState(stateFile = STATE_FILE): OwnerState | null {
   try {
     const s = JSON.parse(readFileSync(stateFile, "utf8")) as OwnerState;
-    return Number.isInteger(s.pid) && validPort(s.port) && pidAlive(s.pid) ? s : null;
+    return validPid(s.pid) && validPort(s.port) && pidAlive(s.pid) ? s : null;
   } catch {
     return null;
   }

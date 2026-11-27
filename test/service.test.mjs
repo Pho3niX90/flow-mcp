@@ -103,6 +103,12 @@ test("claimState, readState, and clearState enforce single ownership and ignore 
     clearState(process.pid, stateFile);
     assert.equal(existsSync(stateFile), false);
 
+    // Non-positive, fractional, or non-numeric pids are rejected without calling process.kill(0/-1).
+    for (const badPid of [0, -1, -process.pid, 1.5, "123", null]) {
+      writeFileSync(stateFile, JSON.stringify({ pid: badPid, port: 8787, kind: "daemon", started: "2020-01-01T00:00:00Z" }));
+      assert.equal(readState(stateFile), null, `expected readState to reject pid ${String(badPid)}`);
+    }
+
     // A stale file naming a nonexistent pid is ignored and replaced cleanly.
     writeFileSync(stateFile, JSON.stringify({ pid: 99999999, port: 8787, kind: "daemon", started: "2020-01-01T00:00:00Z" }));
     assert.equal(readState(stateFile), null);
