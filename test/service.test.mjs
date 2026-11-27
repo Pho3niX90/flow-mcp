@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { claimState, clearState, DEFAULTS, ensureConfig, health, pidAlive, readConfig, readState, rotateLogIfNeeded } from "../dist/config.js";
-import { startServer } from "../dist/server.js";
+import { parseRange, startServer } from "../dist/server.js";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const CLI_JS = join(ROOT, "dist", "cli.js");
@@ -343,5 +343,213 @@ test("flow-studio CLI start, status, idempotent start, and stop work cleanly wit
       }
     }
     rmSync(rootTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test("parseRange validates single ranges, open-ended ranges, suffix ranges, and rejects bad ranges", () => {
+  assert.deepEqual(parseRange(undefined, 100), { kind: "none" });
+  assert.deepEqual(parseRange(undefined, 0), { kind: "none" });
+  assert.deepEqual(parseRange("bytes=0-9", 100), { kind: "ok", start: 0, end: 9 });
+  assert.deepEqual(parseRange("bytes=10-", 100), { kind: "ok", start: 10, end: 99 });
+  assert.deepEqual(parseRange("bytes=90-500", 100), { kind: "ok", start: 90, end: 99 });
+  assert.deepEqual(parseRange("bytes=-10", 100), { kind: "ok", start: 90, end: 99 });
+  assert.deepEqual(parseRange("bytes=-500", 100), { kind: "ok", start: 0, end: 99 });
+
+  assert.deepEqual(parseRange("bytes=0-1", 0), { kind: "invalid" });
+  assert.deepEqual(parseRange("bytes=50-10", 100), { kind: "invalid" });
+  assert.deepEqual(parseRange("bytes=100-", 100), { kind: "invalid" });
+  assert.deepEqual(parseRange("bytes=0-1,2-3", 100), { kind: "invalid" });
+  assert.deepEqual(parseRange("bytes=-0", 100), { kind: "invalid" });
+  assert.deepEqual(parseRange("bytes=-", 100), { kind: "invalid" });
+  assert.deepEqual(parseRange("items=0-5", 100), { kind: "invalid" });
+});
+
+test("startServer enforces method allow-list, token scoping, origin check, CSP nonce, media checks, and upload cap", async () => {
+  const dir = tempDir("flow-sec-");
+  const stateFile = join(dir, "studio.json");
+  const tokenFile = join(dir, "token");
+  const uploadDir = join(dir, "uploads");
+  const mediaDir = join(dir, "media");
+  const outsideDir = join(dir, "outside");
+  mkdirSync(mediaDir, { recursive: true });
+  mkdirSync(outsideDir, { recursive: true });
+
+  const pngFile = join(mediaDir, "pic.png");
+  writeFileSync(pngFile, Buffer.from("0123456789abcdef"));
+  const emptyPng = join(mediaDir, "empty.png");
+  writeFileSync(emptyPng, Buffer.alloc(0));
+  const txtFile = join(mediaDir, "secret.txt");
+  writeFileSync(txtFile, "not media");
+  const subDir = join(mediaDir, "folder.png");
+  mkdirSync(subDir);
+  const outsidePng = join(outsideDir, "escape.png");
+  writeFileSync(outsidePng, Buffer.from("outside-secret"));
+  const linkPng = join(mediaDir, "escape-link.png");
+  let symlinkCreated = false;
+  try {
+    symlinkSync(outsidePng, linkPng);
+    symlinkCreated = true;
+  } catch (err) {
+    if (err.code !== "EPERM" && err.code !== "EACCES") throw err;
+  }
+
+  let srv = null;
+  const port = await getFreePortPair();
+  const fakeCore = {
+    busy: true,
+    runningJobs: () => [{ id: "j1", scene: "s1" }],
+    run: async () => ({ leaked: true }),
+    voices: async () => ({ ok: "voices" }),
+  };
+
+  try {
+    const role = await startServer(fakeCore, "daemon", {
+      port,
+      stateFile,
+      tokenFile,
+      uploadDir,
+      mediaRoots: [mediaDir, uploadDir],
+      maxUploadBytes: 64,
+      probeAttempts: 2,
+      probeDelayMs: 50,
+      onShutdown: () => {},
+      onServer: (s) => {
+        srv = s;
+      },
+    });
+    assert.equal(role, "owner");
+    const token = readFileSync(tokenFile, "utf8").trim();
+    const base = `http://127.0.0.1:${port}`;
+
+    // Security headers and nonce CSP on GET /.
+    const home = await fetch(`${base}/`);
+    assert.equal(home.status, 200);
+    assert.equal(home.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(home.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(home.headers.get("x-frame-options"), "DENY");
+    const csp = home.headers.get("content-security-policy") ?? "";
+    const nonceMatch = csp.match(/script-src 'nonce-([^']+)'/);
+    assert.ok(nonceMatch, `expected script-src nonce in CSP, got: ${csp}`);
+    assert.ok(!/script-src[^;]*unsafe-inline/.test(csp), "script-src must not allow unsafe-inline");
+    const html = await home.text();
+    assert.ok(html.includes(`<script nonce="${nonceMatch[1]}">`), "HTML script tag must carry matching nonce");
+
+    // Non-Core and prototype methods are refused with 404.
+    for (const badMethod of ["toString", "constructor", "runningJobs", "run"]) {
+      const r = await fetch(`${base}/api/${badMethod}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-flow-token": token },
+        body: "{}",
+      });
+      assert.equal(r.status, 404, `expected 404 for /api/${badMethod}`);
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(r.headers.get("referrer-policy"), "no-referrer");
+    }
+
+    // Core method on fake core succeeds with valid header token.
+    const okVoices = await fetch(`${base}/api/voices`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-flow-token": token },
+    });
+    assert.equal(okVoices.status, 200);
+    assert.deepEqual(await okVoices.json(), { ok: "voices" });
+
+    // ?token= query param is rejected on POST routes, accepted on GET /media.
+    const queryPost = await fetch(`${base}/api/voices?token=${token}`, { method: "POST" });
+    assert.equal(queryPost.status, 401);
+    const queryShutdown = await fetch(`${base}/api/shutdown?token=${token}`, { method: "POST", body: '{"force":true}' });
+    assert.equal(queryShutdown.status, 401);
+    const queryMedia = await fetch(`${base}/media?path=${encodeURIComponent(pngFile)}&token=${token}`);
+    assert.equal(queryMedia.status, 200);
+    assert.equal(queryMedia.headers.get("cache-control"), "no-store");
+    assert.equal(queryMedia.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(await queryMedia.text(), "0123456789abcdef");
+
+    // Foreign Origin header is rejected with 403; own Origin is allowed.
+    const badOrigin = await fetch(`${base}/api/voices`, {
+      method: "POST",
+      headers: { "x-flow-token": token, origin: "https://evil.example" },
+    });
+    assert.equal(badOrigin.status, 403);
+    const goodOrigin = await fetch(`${base}/api/voices`, {
+      method: "POST",
+      headers: { "x-flow-token": token, origin: base },
+    });
+    assert.equal(goodOrigin.status, 200);
+
+    // Shutdown requires strict boolean force === true when busy.
+    for (const badForce of [{ force: "true" }, { force: 1 }, { force: "false" }]) {
+      const r = await fetch(`${base}/api/shutdown`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-flow-token": token },
+        body: JSON.stringify(badForce),
+      });
+      assert.equal(r.status, 409);
+    }
+
+    // Media Range handling: valid, suffix, bad -> 416, zero-length -> 200.
+    const r206 = await fetch(`${base}/media?path=${encodeURIComponent(pngFile)}`, {
+      headers: { "x-flow-token": token, range: "bytes=2-5" },
+    });
+    assert.equal(r206.status, 206);
+    assert.equal(r206.headers.get("content-range"), "bytes 2-5/16");
+    assert.equal(await r206.text(), "2345");
+
+    const rSuffix = await fetch(`${base}/media?path=${encodeURIComponent(pngFile)}`, {
+      headers: { "x-flow-token": token, range: "bytes=-4" },
+    });
+    assert.equal(rSuffix.status, 206);
+    assert.equal(await rSuffix.text(), "cdef");
+
+    for (const badRange of ["bytes=10-5", "bytes=999-", "bytes=0-1,2-3", "bytes=bad"]) {
+      const r416 = await fetch(`${base}/media?path=${encodeURIComponent(pngFile)}`, {
+        headers: { "x-flow-token": token, range: badRange },
+      });
+      assert.equal(r416.status, 416, `expected 416 for ${badRange}`);
+      assert.equal(r416.headers.get("content-range"), "bytes */16");
+    }
+
+    const rEmpty = await fetch(`${base}/media?path=${encodeURIComponent(emptyPng)}`, {
+      headers: { "x-flow-token": token },
+    });
+    assert.equal(rEmpty.status, 200);
+    assert.equal(rEmpty.headers.get("content-length"), "0");
+    assert.equal(await rEmpty.text(), "");
+
+    // Directory, non-media extension, and symlink escape all return 404.
+    const rDir = await fetch(`${base}/media?path=${encodeURIComponent(subDir)}`, { headers: { "x-flow-token": token } });
+    assert.equal(rDir.status, 404);
+    const rTxt = await fetch(`${base}/media?path=${encodeURIComponent(txtFile)}`, { headers: { "x-flow-token": token } });
+    assert.equal(rTxt.status, 404);
+    if (symlinkCreated) {
+      const rLink = await fetch(`${base}/media?path=${encodeURIComponent(linkPng)}`, { headers: { "x-flow-token": token } });
+      assert.equal(rLink.status, 404);
+    }
+
+    // Upload within cap succeeds; upload over cap returns 413 and leaves no partial file behind.
+    const okUp = await fetch(`${base}/api/upload?name=small.png`, {
+      method: "POST",
+      headers: { "x-flow-token": token },
+      body: Buffer.alloc(32, 0x41),
+    });
+    assert.equal(okUp.status, 200);
+    const upFilesBefore = readdirSync(uploadDir).length;
+    assert.equal(upFilesBefore, 1);
+
+    const bigUp = await fetch(`${base}/api/upload?name=huge.png`, {
+      method: "POST",
+      headers: { "x-flow-token": token },
+      body: Buffer.alloc(128, 0x42),
+    });
+    assert.equal(bigUp.status, 413);
+    assert.equal(readdirSync(uploadDir).length, upFilesBefore, "oversized upload must leave no partial file");
+
+    // Server stays alive and healthy after all rejected requests.
+    const h = await health(port);
+    assert.equal(h?.name, "flow-mcp");
+  } finally {
+    clearState(process.pid, stateFile);
+    if (srv) await new Promise((r) => srv.close(r));
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

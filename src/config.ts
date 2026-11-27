@@ -1,6 +1,18 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+// Creates a private data directory with mode 0700 on Unix (also tightening existing dirs).
+export function ensurePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      // Best effort on filesystems without POSIX permissions.
+    }
+  }
+}
 
 // Everything Flow Studio keeps on this computer lives in one folder: settings, the Chrome profile, logs, and the note
 // saying which process is serving the panel right now.
@@ -65,7 +77,7 @@ export const OUTPUT_ROOT = CONFIG.output;
 // Writes config.json with the defaults the first time, so there is a file to edit.
 export function ensureConfig(configFile = CONFIG_FILE): boolean {
   if (existsSync(configFile)) return false;
-  mkdirSync(dirname(configFile), { recursive: true });
+  ensurePrivateDir(dirname(configFile));
   writeFileSync(configFile, JSON.stringify({ port: DEFAULTS.port, cdpPort: DEFAULTS.cdpPort, output: DEFAULTS.output }, null, 2) + "\n");
   return true;
 }
@@ -116,7 +128,7 @@ export function readState(stateFile = STATE_FILE): OwnerState | null {
 // Claims the note for this process. Creating the file fails if another process got there first, so two that start
 // together cannot both believe they are the owner. Returns the other live owner when there is one.
 export function claimState(state: OwnerState, stateFile = STATE_FILE): OwnerState | null {
-  mkdirSync(dirname(stateFile), { recursive: true });
+  ensurePrivateDir(dirname(stateFile));
   for (let attempt = 0; attempt < 3; attempt++) {
     const other = readState(stateFile);
     if (other && other.pid !== state.pid) return other;
@@ -132,7 +144,7 @@ export function claimState(state: OwnerState, stateFile = STATE_FILE): OwnerStat
 }
 
 export function writeState(state: OwnerState, stateFile = STATE_FILE): void {
-  mkdirSync(dirname(stateFile), { recursive: true });
+  ensurePrivateDir(dirname(stateFile));
   writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
 }
 

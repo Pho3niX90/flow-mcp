@@ -642,6 +642,50 @@ export interface Core {
   music_download(a: Args<"music_download">): Promise<unknown>;
 }
 
+// Explicit allow-list of Core methods exposed over HTTP, kept in compile-time sync with `interface Core`.
+const CORE_METHOD_MAP: Record<keyof Core, true> = {
+  status: true,
+  generate: true,
+  wait: true,
+  cancel: true,
+  retry: true,
+  assets: true,
+  download: true,
+  assemble: true,
+  techniques: true,
+  voices: true,
+  narrate: true,
+  projects: true,
+  new_project: true,
+  open_project: true,
+  rename_project: true,
+  character: true,
+  characters: true,
+  accounts: true,
+  image_models: true,
+  character_edit: true,
+  edit: true,
+  cutout: true,
+  trash: true,
+  rename: true,
+  discard: true,
+  set_key: true,
+  check_key: true,
+  continue_shot: true,
+  agent: true,
+  outputs: true,
+  transcribe: true,
+  caption_preview: true,
+  captions: true,
+  presenter: true,
+  caption_setup: true,
+  music_status: true,
+  music: true,
+  music_songs: true,
+  music_download: true,
+};
+export const CORE_METHODS: ReadonlySet<string> = new Set(Object.keys(CORE_METHOD_MAP));
+
 // Flow's own voices: still offered when giving a character a voice, but narration no longer goes through Flow.
 export const VOICES = [
   { name: "Achernar", description: "female, soft, high pitch" },

@@ -15,6 +15,7 @@ import {
   TOKEN_FILE,
   clearState,
   ensureConfig,
+  ensurePrivateDir,
   health,
   pidAlive,
   readConfig,
@@ -72,7 +73,7 @@ async function start(): Promise<number> {
     if (flag("open")) openUrl(already.url);
     return 0;
   }
-  mkdirSync(LOG_DIR, { recursive: true });
+  ensurePrivateDir(LOG_DIR);
   rotateLogIfNeeded(LOG_FILE);
   const log = openSync(LOG_FILE, "a");
   let child: ReturnType<typeof spawn>;

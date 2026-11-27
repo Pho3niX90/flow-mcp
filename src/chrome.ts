@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { chromeFile, currentAccount, downloadDir, HOME_DIR, listAccounts, profileDir, type Account } from "./accounts.js";
-import { CONFIG, OUTPUT_ROOT } from "./config.js";
+import { CONFIG, OUTPUT_ROOT, ensurePrivateDir } from "./config.js";
 import { CHROME_HINT, commandLineUses, debugBrowserCommandLines, startProcessCommand, systemTool } from "./platform.js";
 import { FLOW_URL, MUSIC_URL, isSiteUrl, pickSiteUrlIndex, type Site } from "./sites.js";
 import { trace } from "./trace.js";
@@ -83,7 +83,7 @@ export async function ownChrome(account: Account = currentAccount()): Promise<nu
 
 function noteChrome(account: Account, port: number, id: string): void {
   const noteFile = chromeFile(account);
-  mkdirSync(dirname(noteFile), { recursive: true });
+  ensurePrivateDir(dirname(noteFile));
   writeFileSync(noteFile, JSON.stringify({ port, id, started: new Date().toISOString() }, null, 2) + "\n");
 }
 
@@ -135,7 +135,7 @@ export function seedDownloadPreferences(profile: string, dlDir: string): boolean
       return false;
     }
   } else {
-    mkdirSync(defaultDir, { recursive: true });
+    ensurePrivateDir(defaultDir);
   }
   const existingDownload =
     prefs.download && typeof prefs.download === "object" && !Array.isArray(prefs.download)
@@ -199,7 +199,7 @@ export function chromeLaunchArgs(profile: string, port: number): string[] {
 async function launchChrome(a: Account): Promise<number> {
   const chromePath = chromeExecutable();
   const profile = profileDir(a);
-  mkdirSync(profile, { recursive: true });
+  ensurePrivateDir(profile);
   // Chrome rewrites Preferences from memory while it runs, so the file is only touched when the profile is idle.
   if (!profileInUse(profile)) seedDownloadPreferences(profile, downloadDir(a));
   const port = await freePort(a.port);

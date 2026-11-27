@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, createReadStream, createWriteStream, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { CACHE_DIR as CAPTIONS_DIR } from "./captions.js";
@@ -13,13 +13,14 @@ import {
   TOKEN_FILE,
   claimState,
   clearState,
+  ensurePrivateDir,
   health,
   readState,
   writeState,
   type OwnerKind,
   type OwnerState,
 } from "./config.js";
-import { OUTPUT_ROOT, shapes, type Core } from "./core.js";
+import { CORE_METHODS, OUTPUT_ROOT, shapes, type Core } from "./core.js";
 
 export { TOKEN_FILE };
 // The port the panel is on. It starts as the one asked for and is updated by startServer() to the one really in use:
@@ -28,6 +29,10 @@ export let PORT = CONFIG.port;
 const UPLOAD_DIR = join(HOME_DIR, "uploads");
 const STUDIO_HTML = fileURLToPath(new URL("../studio/index.html", import.meta.url));
 const MAX_UPLOAD = 200 * 1024 * 1024;
+const BASE_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+} as const;
 
 const MIME: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -43,10 +48,17 @@ const MIME: Record<string, string> = {
   ".m4a": "audio/mp4",
 };
 
-const json = (res: ServerResponse, code: number, data: unknown) => {
-  res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" });
+const json = (res: ServerResponse, code: number, data: unknown, extra: Record<string, string> = {}) => {
+  res.writeHead(code, { ...BASE_HEADERS, "content-type": "application/json", "cache-control": "no-store", ...extra });
   res.end(JSON.stringify(data));
 };
+
+function tokensEqual(given: string | string[] | undefined, expected: string): boolean {
+  if (typeof given !== "string") return false;
+  const a = Buffer.from(given, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((ok, fail) => {
@@ -64,21 +76,165 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   });
 }
 
-const inside = (file: string, dir: string) => resolve(file).startsWith(resolve(dir) + sep);
+// Streams an upload directly to disk so large files are never buffered in RAM, enforcing the byte cap on the fly.
+function streamUpload(req: IncomingMessage, dest: string, limit: number): Promise<"ok" | "too_large"> {
+  return new Promise((ok, fail) => {
+    const out = createWriteStream(dest, { flags: "wx", mode: 0o600 });
+    let written = 0;
+    let settled = false;
+    const cleanupAnd = (done: () => void) => {
+      const unlink = () => {
+        try {
+          rmSync(dest, { force: true });
+        } catch {
+          // Best effort cleanup.
+        }
+        done();
+      };
+      if (out.closed) unlink();
+      else {
+        out.once("close", unlink);
+        out.destroy();
+      }
+    };
+    const abort = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanupAnd(() => fail(err));
+    };
 
-function sendMedia(req: IncomingMessage, res: ServerResponse, file: string) {
-  if (!(inside(file, OUTPUT_ROOT) || inside(file, UPLOAD_DIR) || inside(file, CAPTIONS_DIR)) || !existsSync(file)) return json(res, 404, { error: "Not found." });
-  const { size } = statSync(file);
-  const type = MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
-  const range = req.headers.range?.match(/bytes=(\d*)-(\d*)/);
-  if (range) {
-    const start = range[1] ? Number(range[1]) : 0;
-    const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-    res.writeHead(206, { "content-type": type, "accept-ranges": "bytes", "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
-    return createReadStream(file, { start, end }).pipe(res);
+    out.on("error", abort);
+    out.on("finish", () => {
+      if (settled) return;
+      settled = true;
+      ok("ok");
+    });
+
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      written += chunk.length;
+      if (written > limit) {
+        settled = true;
+        req.pause();
+        cleanupAnd(() => ok("too_large"));
+        return;
+      }
+      if (!out.write(chunk)) {
+        req.pause();
+        out.once("drain", () => {
+          if (!settled) req.resume();
+        });
+      }
+    });
+    req.on("end", () => {
+      if (!settled) out.end();
+    });
+    req.on("error", abort);
+    req.on("aborted", () => abort(new Error("Upload aborted.")));
+    req.on("close", () => {
+      if (!settled && !req.complete) abort(new Error("Upload aborted."));
+    });
+  });
+}
+
+export type ParsedRange = { kind: "none" } | { kind: "ok"; start: number; end: number } | { kind: "invalid" };
+
+// Parses a single HTTP byte range (bytes=start-end, bytes=start-, bytes=-suffix). Rejects multi-range, inverted,
+// out-of-bounds, and malformed headers so callers can answer 416 cleanly.
+export function parseRange(header: string | undefined, size: number): ParsedRange {
+  if (!header) return { kind: "none" };
+  if (size <= 0) return { kind: "invalid" };
+  const m = header.trim().match(/^bytes=(\d*)-(\d*)$/);
+  if (!m) return { kind: "invalid" };
+  const [, startStr, endStr] = m;
+  if (!startStr && !endStr) return { kind: "invalid" };
+  if (!startStr) {
+    const suffix = Number(endStr);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return { kind: "invalid" };
+    return { kind: "ok", start: Math.max(0, size - suffix), end: size - 1 };
   }
-  res.writeHead(200, { "content-type": type, "accept-ranges": "bytes", "content-length": size });
-  createReadStream(file).pipe(res);
+  const start = Number(startStr);
+  const end = endStr ? Math.min(Number(endStr), size - 1) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || start > end) {
+    return { kind: "invalid" };
+  }
+  return { kind: "ok", start, end };
+}
+
+function resolveAllowedMedia(file: string, roots: string[]): string | null {
+  if (!file) return null;
+  let realFile: string;
+  try {
+    realFile = realpathSync(file);
+  } catch {
+    return null;
+  }
+  const win = process.platform === "win32";
+  const candidate = win ? realFile.toLowerCase() : realFile;
+  for (const root of roots) {
+    let realRoot: string;
+    try {
+      realRoot = realpathSync(root);
+    } catch {
+      continue;
+    }
+    const base = win ? realRoot.toLowerCase() : realRoot;
+    const prefix = base.endsWith(sep) ? base : base + sep;
+    if (candidate.startsWith(prefix)) return realFile;
+  }
+  return null;
+}
+
+function sendMedia(req: IncomingMessage, res: ServerResponse, file: string, mediaRoots: string[]) {
+  const real = resolveAllowedMedia(file, mediaRoots);
+  if (!real) return json(res, 404, { error: "Not found." });
+  let size: number;
+  try {
+    const st = statSync(real);
+    if (!st.isFile()) return json(res, 404, { error: "Not found." });
+    size = st.size;
+  } catch {
+    return json(res, 404, { error: "Not found." });
+  }
+  const ext = extname(real).toLowerCase();
+  if (!Object.hasOwn(MIME, ext)) return json(res, 404, { error: "Not found." });
+  const type = MIME[ext];
+  const parsed = parseRange(req.headers.range, size);
+  if (parsed.kind === "invalid") {
+    res.writeHead(416, { ...BASE_HEADERS, "cache-control": "no-store", "content-range": `bytes */${size}` });
+    return res.end();
+  }
+  if (size === 0) {
+    res.writeHead(200, { ...BASE_HEADERS, "cache-control": "no-store", "content-type": type, "accept-ranges": "bytes", "content-length": 0 });
+    return res.end();
+  }
+  const stream = parsed.kind === "ok" ? createReadStream(real, { start: parsed.start, end: parsed.end }) : createReadStream(real);
+  stream.once("open", () => {
+    if (parsed.kind === "ok") {
+      res.writeHead(206, {
+        ...BASE_HEADERS,
+        "cache-control": "no-store",
+        "content-type": type,
+        "accept-ranges": "bytes",
+        "content-range": `bytes ${parsed.start}-${parsed.end}/${size}`,
+        "content-length": parsed.end - parsed.start + 1,
+      });
+    } else {
+      res.writeHead(200, {
+        ...BASE_HEADERS,
+        "cache-control": "no-store",
+        "content-type": type,
+        "accept-ranges": "bytes",
+        "content-length": size,
+      });
+    }
+    stream.pipe(res);
+  });
+  stream.on("error", () => {
+    if (!res.headersSent) json(res, 404, { error: "Not found." });
+    else res.destroy();
+  });
+  res.on("close", () => stream.destroy());
 }
 
 export type ServerRole = "owner" | "client" | "none";
@@ -110,6 +266,8 @@ export interface StartServerOptions {
   stateFile?: string;
   tokenFile?: string;
   uploadDir?: string;
+  mediaRoots?: string[];
+  maxUploadBytes?: number;
   probeAttempts?: number;
   probeDelayMs?: number;
   onShutdown?: () => void;
@@ -123,9 +281,11 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
   const stateFile = opts.stateFile ?? STATE_FILE;
   const tokenFile = opts.tokenFile ?? TOKEN_FILE;
   const uploadDir = opts.uploadDir ?? UPLOAD_DIR;
+  const mediaRoots = opts.mediaRoots ?? [OUTPUT_ROOT, uploadDir, CAPTIONS_DIR];
+  const maxUploadBytes = opts.maxUploadBytes ?? MAX_UPLOAD;
   const probeAttempts = opts.probeAttempts ?? 8;
   const probeDelayMs = opts.probeDelayMs ?? 1500;
-  mkdirSync(uploadDir, { recursive: true });
+  ensurePrivateDir(uploadDir);
   const token = randomBytes(24).toString("hex");
   const coreWithState = core as { busy?: boolean; runningJobs?: () => RunningJobInfo[] };
   const runningJobs = (): RunningJobInfo[] => coreWithState.runningJobs?.() ?? [];
@@ -153,28 +313,54 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
   let activePort = opts.port ?? CONFIG.port;
   const server = createServer(async (req, res) => {
     try {
-      // The Host check blocks DNS-rebinding; the token blocks other local pages from driving the queue.
+      // The Host and Origin checks block DNS-rebinding and cross-origin browser requests; the token blocks other local pages.
       if (req.headers.host !== `127.0.0.1:${activePort}` && req.headers.host !== `localhost:${activePort}`) return json(res, 403, { error: "Bad host." });
+      const origin = req.headers.origin;
+      if (origin !== undefined && origin !== `http://127.0.0.1:${activePort}` && origin !== `http://localhost:${activePort}`) {
+        return json(res, 403, { error: "Bad origin." });
+      }
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
       if (req.method === "GET" && url.pathname === "/api/health") {
         return json(res, 200, { name: "flow-mcp", pid: process.pid, kind, busy: busy(), running_jobs: runningJobs().length });
       }
-      if (url.pathname === "/favicon.ico") return void res.writeHead(204).end();
+      if (url.pathname === "/favicon.ico") return void res.writeHead(204, BASE_HEADERS).end();
       if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        return res.end(readFileSync(STUDIO_HTML, "utf8").replace("__FLOW_TOKEN__", token));
+        const nonce = randomBytes(16).toString("base64");
+        const csp = [
+          "default-src 'self'",
+          `script-src 'nonce-${nonce}'`,
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+          "font-src https://fonts.gstatic.com",
+          "img-src 'self' data: blob:",
+          "media-src 'self' blob:",
+          "connect-src 'self'",
+          "frame-ancestors 'none'",
+          "base-uri 'none'",
+          "form-action 'none'",
+          "object-src 'none'",
+        ].join("; ");
+        res.writeHead(200, {
+          ...BASE_HEADERS,
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "x-frame-options": "DENY",
+          "content-security-policy": csp,
+        });
+        return res.end(readFileSync(STUDIO_HTML, "utf8").replace("__FLOW_TOKEN__", token).replace("__FLOW_NONCE__", nonce));
       }
 
-      const given = req.headers["x-flow-token"] ?? url.searchParams.get("token");
-      if (given !== token) return json(res, 401, { error: "Missing or wrong token." });
+      const isMediaGet = req.method === "GET" && url.pathname === "/media";
+      const given = req.headers["x-flow-token"] ?? (isMediaGet ? (url.searchParams.get("token") ?? undefined) : undefined);
+      if (!tokensEqual(given, token)) return json(res, 401, { error: "Missing or wrong token." });
 
-      if (req.method === "GET" && url.pathname === "/media") return sendMedia(req, res, url.searchParams.get("path") ?? "");
+      if (isMediaGet) return sendMedia(req, res, url.searchParams.get("path") ?? "", mediaRoots);
 
       if (req.method === "POST" && url.pathname === "/api/upload") {
         const name = basename(url.searchParams.get("name") ?? "upload").replace(/[^\w.-]+/g, "_");
         const path = join(uploadDir, `${randomBytes(4).toString("hex")}-${name}`);
-        writeFileSync(path, await readBody(req, MAX_UPLOAD));
+        const status = await streamUpload(req, path, maxUploadBytes);
+        if (status === "too_large") return json(res, 413, { error: "Upload too large." }, { connection: "close" });
         return json(res, 200, { path });
       }
 
@@ -183,13 +369,13 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
       if (req.method === "POST" && url.pathname === "/api/shutdown") {
         if (kind === "mcp") return json(res, 403, { error: "This Flow Studio belongs to an AI assistant. Quit the assistant to stop it." });
         const raw = (await readBody(req, 64 * 1024)).toString().trim();
-        let body: { force?: boolean } = {};
+        let body: { force?: unknown } = {};
         if (raw) {
           const parsed: unknown = JSON.parse(raw);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as { force?: boolean };
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as { force?: unknown };
         }
         const active = runningJobs();
-        if (busy() && !body.force) {
+        if (busy() && body.force !== true) {
           return json(res, 409, {
             error: "A generation is running right now. Wait for it to finish, or pass force: true to stop anyway.",
             busy: true,
@@ -209,7 +395,7 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
       }
 
       const method = url.pathname.match(/^\/api\/(\w+)$/)?.[1] as keyof Core | undefined;
-      if (req.method === "POST" && method && typeof core[method] === "function") {
+      if (req.method === "POST" && method && CORE_METHODS.has(method) && typeof core[method] === "function") {
         const raw = (await readBody(req, 1024 * 1024)).toString() || "{}";
         const shape = (shapes as Record<string, z.ZodRawShape>)[method];
         const args = shape ? z.object(shape).parse(JSON.parse(raw)) : undefined;
@@ -217,10 +403,15 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
       }
       json(res, 404, { error: "Not found." });
     } catch (err) {
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       const message = err instanceof z.ZodError ? err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") : err instanceof Error ? err.message : String(err);
       json(res, 400, { error: message });
     }
   });
+  server.on("clientError", (_err, socket) => socket.destroy());
 
   const listen = (port: number) =>
     new Promise<boolean>((ok) => {
@@ -248,8 +439,15 @@ export async function startServer(core: Core, kind: OwnerKind = "mcp", opts: Sta
         }
         writeState(me, stateFile);
       }
-      mkdirSync(dirname(tokenFile), { recursive: true });
+      ensurePrivateDir(dirname(tokenFile));
       writeFileSync(tokenFile, token, { mode: 0o600 });
+      if (process.platform !== "win32") {
+        try {
+          chmodSync(tokenFile, 0o600);
+        } catch {
+          // Best effort on filesystems without POSIX permissions.
+        }
+      }
       if (!opts.onShutdown) {
         // Leave no note behind saying this process is still serving. No SIGHUP handler on Windows.
         process.on("exit", () => clearState(process.pid, stateFile));
