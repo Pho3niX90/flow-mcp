@@ -37,5 +37,8 @@
   "homepage": "https://github.com/Pho3niX90/flow-mcp#readme",
   "bugs": {
     "url": "https://github.com/Pho3niX90/flow-mcp/issues"
+  },
+  "overrides": {
+    "sharp": "^0.35.5"
   }
 }
